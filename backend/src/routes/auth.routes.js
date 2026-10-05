@@ -136,8 +136,8 @@ router.post("/register", async (req, res) => {
       email: cleanEmail,
       passwordHash,
       role: "participant",
-      qualificationStatus: "PENDING",
-      round1Status: "NOT_STARTED",
+      qualificationStatus: "QUALIFIED",
+      round1Status: "COMPLETED",
       round1Score: 0
     });
 
