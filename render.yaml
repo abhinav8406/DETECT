@@ -20,7 +20,7 @@ services:
         fromService:
           type: web
           name: fest-detective-frontend
-          property: url
+          property: host
 
   # ---------------------------------------------------------------------------
   # Frontend Static Site (React + Vite)
@@ -40,5 +40,4 @@ services:
         fromService:
           type: web
           name: fest-detective-backend
-          property: url
-          append: /api
+          property: host

@@ -13,9 +13,17 @@ import adminRoutes from "./routes/admin.routes.js";
 const app = express();
 const server = http.createServer(app);
 
-const clientOrigin = process.env.CLIENT_URL
-  ? process.env.CLIENT_URL.replace(/\/$/, "")
+let clientOrigin = process.env.CLIENT_URL
+  ? process.env.CLIENT_URL.trim().replace(/\/$/, "")
   : "*";
+
+if (
+  clientOrigin !== "*" &&
+  !clientOrigin.startsWith("http://") &&
+  !clientOrigin.startsWith("https://")
+) {
+  clientOrigin = `https://${clientOrigin}`;
+}
 
 const corsOptions = {
   origin: clientOrigin === "*" ? "*" : [clientOrigin, `${clientOrigin}/`],
