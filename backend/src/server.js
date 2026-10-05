@@ -9,6 +9,8 @@ import { Server } from "socket.io";
 import authRoutes from "./routes/auth.routes.js";
 import detectiveRoutes from "./routes/detective.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
+import User from "./models/User.js";
+import { seedDatabase } from "./seed.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -35,6 +37,14 @@ app.use(express.json({ limit: "5mb" }));
 app.use(morgan("dev"));
 
 app.get("/api/health", (_, res) => res.json({ ok: true }));
+app.get("/api/seed", async (_, res) => {
+  try {
+    await seedDatabase();
+    res.json({ ok: true, message: "Database seeded successfully!" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/detective", detectiveRoutes);
@@ -54,4 +64,15 @@ io.on("connection", socket => {
 const port = process.env.PORT || 5000;
 
 await mongoose.connect(process.env.MONGO_URI);
+
+const userCount = await User.countDocuments();
+if (userCount === 0) {
+  console.log("Database is empty. Automatically running seed...");
+  try {
+    await seedDatabase();
+  } catch (err) {
+    console.error("Auto-seed error:", err.message);
+  }
+}
+
 server.listen(port, () => console.log(`API listening on ${port}`));
