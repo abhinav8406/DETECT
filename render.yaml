@@ -1,0 +1,44 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Backend Web Service (Node.js + Express + Socket.IO)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: fest-detective-backend
+    env: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm run start
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: MONGO_URI
+        sync: false # Set your MongoDB Atlas URI in Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CLIENT_URL
+        fromService:
+          type: web
+          name: fest-detective-frontend
+          property: url
+
+  # ---------------------------------------------------------------------------
+  # Frontend Static Site (React + Vite)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: fest-detective-frontend
+    env: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: fest-detective-backend
+          property: url
+          append: /api
