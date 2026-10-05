@@ -1,0 +1,49 @@
+body { background: #f5f6f8; }
+.login-card { width: min(420px, calc(100% - 2rem)); }
+.detective-card { border: 0; }
+.evidence-box {
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: .75rem;
+  padding: 1rem;
+  white-space: pre-wrap;
+}
+.option-btn {
+  border: 1px solid #dee2e6;
+  background: #fff;
+}
+.option-btn:hover, .option-btn.selected {
+  border-color: #212529;
+  background: #f0f1f2;
+}
+.dashboard-shell { min-height: 100vh; background: #f3f4f6; }
+.eyebrow { font-size: .72rem; letter-spacing: .14em; font-weight: 700; color: #6c757d; }
+.round-card { min-height: 260px; border-radius: 1.25rem; padding: 2rem; display: flex; gap: 1.5rem; background: #fff; border: 1px solid #e1e4e8; box-shadow: 0 8px 30px rgba(0,0,0,.05); }
+.round-card.locked { opacity: .7; }
+.round-card.unlocked { border: 2px solid #212529; }
+.round-number { font-size: 3rem; line-height: 1; font-weight: 800; color: #adb5bd; }
+
+.progress-strip { display:flex; align-items:center; gap:.55rem; color:#6c757d; font-size:.72rem; font-weight:700; letter-spacing:.08em; }
+.progress-strip i { width:28px; height:28px; border-radius:50%; display:grid; place-items:center; border:1px solid #ced4da; font-style:normal; }
+.progress-strip i.active { background:#212529; color:#fff; border-color:#212529; }
+
+
+
+.round-card {
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.round-card-active {
+  cursor: pointer;
+}
+
+.round-card-active:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.12) !important;
+}
+
+.round-card-locked {
+  opacity: 0.7;
+}
