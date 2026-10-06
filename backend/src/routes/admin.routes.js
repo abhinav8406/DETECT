@@ -753,179 +753,788 @@ router.delete(
 );
 
 
-/* =========================================================
-   QUESTION CRUD
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| QUESTION MANAGEMENT
+|--------------------------------------------------------------------------
+*/
 
-router.post(
-  "/questions",
-  async (req, res) => {
-    try {
-      const created =
-        await DetectiveQuestion.create(
-          req.body
-        );
+// GET QUESTIONS FOR A CASE
+router.get("/cases/:caseId/questions", async (req, res) => {
+  try {
+    const { caseId } = req.params;
 
-      res.status(201).json(
-        created
+    if (!validId(caseId)) {
+      return res.status(400).json({
+        message: "Invalid case ID"
+      });
+    }
+
+    const detectiveCase = await DetectiveCase.findById(caseId);
+
+    if (!detectiveCase) {
+      return res.status(404).json({
+        message: "Case not found"
+      });
+    }
+
+    const questions = await DetectiveQuestion.find({ caseId })
+      .sort({
+        sequenceNumber: 1,
+        createdAt: 1
+      })
+      .lean();
+
+    res.json(questions);
+  } catch (error) {
+    console.error("GET questions error:", error);
+
+    res.status(500).json({
+      message: "Failed to load questions"
+    });
+  }
+});
+
+
+// CREATE QUESTION
+router.post("/questions", async (req, res) => {
+  try {
+    const {
+      caseId,
+      clueId,
+      sequenceNumber,
+      question,
+      options,
+      correctOption,
+      points,
+      isPublished
+    } = req.body;
+
+    if (!validId(caseId)) {
+      return res.status(400).json({
+        message: "Invalid case ID"
+      });
+    }
+
+    const detectiveCase = await DetectiveCase.findById(caseId);
+
+    if (!detectiveCase) {
+      return res.status(404).json({
+        message: "Case not found"
+      });
+    }
+
+    if (clueId && !validId(clueId)) {
+      return res.status(400).json({
+        message: "Invalid clue ID"
+      });
+    }
+
+    const cleanQuestion =
+      typeof question === "string"
+        ? question.trim()
+        : "";
+
+    if (!cleanQuestion) {
+      return res.status(400).json({
+        message: "Question is required"
+      });
+    }
+
+    const cleanOptions = Array.isArray(options)
+      ? options
+          .map(option =>
+            typeof option === "string"
+              ? option.trim()
+              : ""
+          )
+          .filter(Boolean)
+      : [];
+
+    if (cleanOptions.length < 2) {
+      return res.status(400).json({
+        message: "At least 2 answer options are required"
+      });
+    }
+
+    const order = Number(sequenceNumber);
+
+    if (!Number.isInteger(order) || order < 1) {
+      return res.status(400).json({
+        message: "Question order must be at least 1"
+      });
+    }
+
+    const correct = Number(correctOption);
+
+    if (
+      !Number.isInteger(correct) ||
+      correct < 0 ||
+      correct >= cleanOptions.length
+    ) {
+      return res.status(400).json({
+        message: "Invalid correct answer"
+      });
+    }
+
+    const score = Number(points);
+
+    if (!Number.isFinite(score) || score < 0) {
+      return res.status(400).json({
+        message: "Points must be 0 or greater"
+      });
+    }
+
+    const duplicate = await DetectiveQuestion.findOne({
+      caseId,
+      sequenceNumber: order
+    });
+
+    if (duplicate) {
+      return res.status(409).json({
+        message: `Question ${order} already exists for this case`
+      });
+    }
+
+    if (clueId) {
+      const clue = await DetectiveClue.findOne({
+        _id: clueId,
+        caseId
+      });
+
+      if (!clue) {
+        return res.status(400).json({
+          message: "Selected clue does not belong to this case"
+        });
+      }
+    }
+
+    const created = await DetectiveQuestion.create({
+      caseId,
+      clueId: clueId || null,
+      sequenceNumber: order,
+      question: cleanQuestion,
+      options: cleanOptions,
+      correctOption: correct,
+      points: score,
+      isPublished: isPublished !== false
+    });
+
+    res.status(201).json(created);
+  } catch (error) {
+    console.error("CREATE question error:", error);
+
+    res.status(500).json({
+      message: "Failed to create question"
+    });
+  }
+});
+
+
+// UPDATE QUESTION
+router.patch("/questions/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!validId(id)) {
+      return res.status(400).json({
+        message: "Invalid question ID"
+      });
+    }
+
+    const existing =
+      await DetectiveQuestion.findById(id);
+
+    if (!existing) {
+      return res.status(404).json({
+        message: "Question not found"
+      });
+    }
+
+    const cleanQuestion =
+      typeof req.body.question === "string"
+        ? req.body.question.trim()
+        : existing.question;
+
+    const cleanOptions = Array.isArray(req.body.options)
+      ? req.body.options
+          .map(option =>
+            typeof option === "string"
+              ? option.trim()
+              : ""
+          )
+          .filter(Boolean)
+      : existing.options;
+
+    if (!cleanQuestion) {
+      return res.status(400).json({
+        message: "Question is required"
+      });
+    }
+
+    if (cleanOptions.length < 2) {
+      return res.status(400).json({
+        message: "At least 2 answer options are required"
+      });
+    }
+
+    const order =
+      req.body.sequenceNumber !== undefined
+        ? Number(req.body.sequenceNumber)
+        : existing.sequenceNumber;
+
+    if (!Number.isInteger(order) || order < 1) {
+      return res.status(400).json({
+        message: "Question order must be at least 1"
+      });
+    }
+
+    const correct =
+      req.body.correctOption !== undefined
+        ? Number(req.body.correctOption)
+        : existing.correctOption;
+
+    if (
+      !Number.isInteger(correct) ||
+      correct < 0 ||
+      correct >= cleanOptions.length
+    ) {
+      return res.status(400).json({
+        message: "Invalid correct answer"
+      });
+    }
+
+    const score =
+      req.body.points !== undefined
+        ? Number(req.body.points)
+        : existing.points;
+
+    if (!Number.isFinite(score) || score < 0) {
+      return res.status(400).json({
+        message: "Points must be 0 or greater"
+      });
+    }
+
+    const duplicate =
+      await DetectiveQuestion.findOne({
+        caseId: existing.caseId,
+        sequenceNumber: order,
+        _id: { $ne: id }
+      });
+
+    if (duplicate) {
+      return res.status(409).json({
+        message: `Question ${order} already exists`
+      });
+    }
+
+    let clueId = existing.clueId;
+
+    if (req.body.clueId !== undefined) {
+      if (req.body.clueId === "" || req.body.clueId === null) {
+        clueId = null;
+      } else {
+        if (!validId(req.body.clueId)) {
+          return res.status(400).json({
+            message: "Invalid clue ID"
+          });
+        }
+
+        const clue = await DetectiveClue.findOne({
+          _id: req.body.clueId,
+          caseId: existing.caseId
+        });
+
+        if (!clue) {
+          return res.status(400).json({
+            message: "Selected clue does not belong to this case"
+          });
+        }
+
+        clueId = req.body.clueId;
+      }
+    }
+
+    existing.clueId = clueId;
+    existing.sequenceNumber = order;
+    existing.question = cleanQuestion;
+    existing.options = cleanOptions;
+    existing.correctOption = correct;
+    existing.points = score;
+
+    if (req.body.isPublished !== undefined) {
+      existing.isPublished = Boolean(
+        req.body.isPublished
       );
-    } catch (error) {
-      res.status(400).json({
-        message:
-          error.message
+    }
+
+    await existing.save();
+
+    res.json(existing);
+  } catch (error) {
+    console.error("UPDATE question error:", error);
+
+    res.status(500).json({
+      message: "Failed to update question"
+    });
+  }
+});
+
+
+// PUBLISH / UNPUBLISH QUESTION
+router.patch("/questions/:id/publish", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!validId(id)) {
+      return res.status(400).json({
+        message: "Invalid question ID"
       });
     }
-  }
-);
 
+    const question =
+      await DetectiveQuestion.findById(id);
 
-router.patch(
-  "/questions/:id",
-  async (req, res) => {
-    try {
-      const updated =
-        await DetectiveQuestion.findByIdAndUpdate(
-          req.params.id,
-          req.body,
-          {
-            new: true,
-            runValidators: true
-          }
-        );
-
-      if (!updated) {
-        return res.status(404).json({
-          message:
-            "Question not found."
-        });
-      }
-
-      res.json(updated);
-    } catch (error) {
-      res.status(400).json({
-        message:
-          error.message
+    if (!question) {
+      return res.status(404).json({
+        message: "Question not found"
       });
     }
+
+    question.isPublished =
+      Boolean(req.body.isPublished);
+
+    await question.save();
+
+    res.json(question);
+  } catch (error) {
+    console.error(
+      "PUBLISH question error:",
+      error
+    );
+
+    res.status(500).json({
+      message: "Failed to update question status"
+    });
   }
-);
+});
 
 
-router.delete(
-  "/questions/:id",
-  async (req, res) => {
-    try {
-      const deleted =
-        await DetectiveQuestion.findByIdAndDelete(
-          req.params.id
-        );
+// DELETE QUESTION
+router.delete("/questions/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
-      if (!deleted) {
-        return res.status(404).json({
-          message:
-            "Question not found."
-        });
-      }
-
-      res.json({
-        deleted: true
-      });
-    } catch {
-      res.status(500).json({
-        message:
-          "Failed to delete question."
+    if (!validId(id)) {
+      return res.status(400).json({
+        message: "Invalid question ID"
       });
     }
-  }
-);
 
+    const question =
+      await DetectiveQuestion.findById(id);
+
+    if (!question) {
+      return res.status(404).json({
+        message: "Question not found"
+      });
+    }
+
+    await DetectiveQuestion.findByIdAndDelete(id);
+
+    // Also remove questions from their associated hints.
+    await DetectiveHint.deleteMany({
+      questionId: id
+    });
+
+    res.json({
+      message: "Question deleted successfully"
+    });
+  } catch (error) {
+    console.error(
+      "DELETE question error:",
+      error
+    );
+
+    res.status(500).json({
+      message: "Failed to delete question"
+    });
+  }
+});
 
 /* =========================================================
    HINT CRUD
 ========================================================= */
 
-router.post(
-  "/hints",
-  async (req, res) => {
-    try {
-      const created =
-        await DetectiveHint.create(
-          req.body
-        );
+router.get("/cases/:caseId/hints", async (req, res) => {
+  try {
+    const { caseId } = req.params;
 
-      res.status(201).json(
-        created
-      );
-    } catch (error) {
-      res.status(400).json({
-        message:
-          error.message
+    if (!validId(caseId)) {
+      return res.status(400).json({
+        message: "Invalid case id."
       });
     }
+
+    const caseExists = await DetectiveCase.exists({
+      _id: caseId
+    });
+
+    if (!caseExists) {
+      return res.status(404).json({
+        message: "Case not found."
+      });
+    }
+
+    const hints = await DetectiveHint.find({
+      caseId
+    })
+      .populate("questionId", "sequenceNumber question")
+      .populate("clueId", "sequenceNumber title")
+      .sort({
+        sequenceNumber: 1
+      })
+      .lean();
+
+    res.json(hints);
+  } catch (error) {
+    console.error("Get hints error:", error);
+
+    res.status(500).json({
+      message: "Failed to load hints."
+    });
   }
-);
+});
 
 
-router.patch(
-  "/hints/:id",
-  async (req, res) => {
-    try {
-      const updated =
-        await DetectiveHint.findByIdAndUpdate(
-          req.params.id,
-          req.body,
-          {
-            new: true,
-            runValidators: true
-          }
-        );
+router.post("/hints", async (req, res) => {
+  try {
+    const {
+      caseId,
+      questionId,
+      clueId,
+      sequenceNumber,
+      hintText,
+      penalty,
+      isEnabled
+    } = req.body;
 
-      if (!updated) {
-        return res.status(404).json({
-          message:
-            "Hint not found."
+    if (!validId(caseId)) {
+      return res.status(400).json({
+        message: "Valid case is required."
+      });
+    }
+
+    const caseExists = await DetectiveCase.exists({
+      _id: caseId
+    });
+
+    if (!caseExists) {
+      return res.status(404).json({
+        message: "Case not found."
+      });
+    }
+
+    if (!Number.isInteger(Number(sequenceNumber)) || Number(sequenceNumber) < 1) {
+      return res.status(400).json({
+        message: "Sequence number must be at least 1."
+      });
+    }
+
+    if (!cleanString(hintText)) {
+      return res.status(400).json({
+        message: "Hint text is required."
+      });
+    }
+
+    const numericPenalty = Number(penalty);
+
+    if (!Number.isFinite(numericPenalty) || numericPenalty < 0) {
+      return res.status(400).json({
+        message: "Hint penalty must be a non-negative number."
+      });
+    }
+
+    if (!questionId && !clueId) {
+      return res.status(400).json({
+        message: "Hint must be associated with a clue or question."
+      });
+    }
+
+    if (questionId && !validId(questionId)) {
+      return res.status(400).json({
+        message: "Invalid question id."
+      });
+    }
+
+    if (clueId && !validId(clueId)) {
+      return res.status(400).json({
+        message: "Invalid clue id."
+      });
+    }
+
+    if (questionId) {
+      const question = await DetectiveQuestion.findOne({
+        _id: questionId,
+        caseId
+      });
+
+      if (!question) {
+        return res.status(400).json({
+          message: "Question does not belong to this case."
+        });
+      }
+    }
+
+    if (clueId) {
+      const clue = await DetectiveClue.findOne({
+        _id: clueId,
+        caseId
+      });
+
+      if (!clue) {
+        return res.status(400).json({
+          message: "Clue does not belong to this case."
+        });
+      }
+    }
+
+    const duplicate = await DetectiveHint.findOne({
+      caseId,
+      sequenceNumber: Number(sequenceNumber)
+    });
+
+    if (duplicate) {
+      return res.status(409).json({
+        message: "A hint with this sequence number already exists."
+      });
+    }
+
+    const created = await DetectiveHint.create({
+      caseId,
+      questionId: questionId || null,
+      clueId: clueId || null,
+      sequenceNumber: Number(sequenceNumber),
+      hintText: cleanString(hintText),
+      penalty: numericPenalty,
+      isEnabled: isEnabled !== false
+    });
+
+    res.status(201).json(created);
+  } catch (error) {
+    console.error("Create hint error:", error);
+
+    res.status(400).json({
+      message: error.message
+    });
+  }
+});
+
+
+router.patch("/hints/:id", async (req, res) => {
+  try {
+    if (!validId(req.params.id)) {
+      return res.status(400).json({
+        message: "Invalid hint id."
+      });
+    }
+
+    const existing = await DetectiveHint.findById(
+      req.params.id
+    );
+
+    if (!existing) {
+      return res.status(404).json({
+        message: "Hint not found."
+      });
+    }
+
+    const {
+      caseId,
+      questionId,
+      clueId,
+      sequenceNumber,
+      hintText,
+      penalty,
+      isEnabled
+    } = req.body;
+
+    const targetCaseId = caseId || existing.caseId;
+
+    if (!validId(targetCaseId)) {
+      return res.status(400).json({
+        message: "Invalid case id."
+      });
+    }
+
+    const caseExists = await DetectiveCase.exists({
+      _id: targetCaseId
+    });
+
+    if (!caseExists) {
+      return res.status(404).json({
+        message: "Case not found."
+      });
+    }
+
+    const targetSequence =
+      sequenceNumber !== undefined
+        ? Number(sequenceNumber)
+        : existing.sequenceNumber;
+
+    if (
+      !Number.isInteger(targetSequence) ||
+      targetSequence < 1
+    ) {
+      return res.status(400).json({
+        message: "Sequence number must be at least 1."
+      });
+    }
+
+    const targetHintText =
+      hintText !== undefined
+        ? cleanString(hintText)
+        : existing.hintText;
+
+    if (!targetHintText) {
+      return res.status(400).json({
+        message: "Hint text is required."
+      });
+    }
+
+    const targetPenalty =
+      penalty !== undefined
+        ? Number(penalty)
+        : existing.penalty;
+
+    if (
+      !Number.isFinite(targetPenalty) ||
+      targetPenalty < 0
+    ) {
+      return res.status(400).json({
+        message: "Hint penalty must be a non-negative number."
+      });
+    }
+
+    const targetQuestionId =
+      questionId !== undefined
+        ? questionId || null
+        : existing.questionId;
+
+    const targetClueId =
+      clueId !== undefined
+        ? clueId || null
+        : existing.clueId;
+
+    if (!targetQuestionId && !targetClueId) {
+      return res.status(400).json({
+        message: "Hint must be associated with a clue or question."
+      });
+    }
+
+    if (targetQuestionId) {
+      if (!validId(targetQuestionId)) {
+        return res.status(400).json({
+          message: "Invalid question id."
         });
       }
 
-      res.json(updated);
-    } catch (error) {
-      res.status(400).json({
-        message:
-          error.message
+      const question = await DetectiveQuestion.findOne({
+        _id: targetQuestionId,
+        caseId: targetCaseId
       });
+
+      if (!question) {
+        return res.status(400).json({
+          message: "Question does not belong to this case."
+        });
+      }
     }
-  }
-);
 
-
-router.delete(
-  "/hints/:id",
-  async (req, res) => {
-    try {
-      const deleted =
-        await DetectiveHint.findByIdAndDelete(
-          req.params.id
-        );
-
-      if (!deleted) {
-        return res.status(404).json({
-          message:
-            "Hint not found."
+    if (targetClueId) {
+      if (!validId(targetClueId)) {
+        return res.status(400).json({
+          message: "Invalid clue id."
         });
       }
 
-      res.json({
-        deleted: true
+      const clue = await DetectiveClue.findOne({
+        _id: targetClueId,
+        caseId: targetCaseId
       });
-    } catch {
-      res.status(500).json({
-        message:
-          "Failed to delete hint."
+
+      if (!clue) {
+        return res.status(400).json({
+          message: "Clue does not belong to this case."
+        });
+      }
+    }
+
+    const duplicate = await DetectiveHint.findOne({
+      caseId: targetCaseId,
+      sequenceNumber: targetSequence,
+      _id: { $ne: existing._id }
+    });
+
+    if (duplicate) {
+      return res.status(409).json({
+        message: "A hint with this sequence number already exists."
       });
     }
-  }
-);
 
+    existing.caseId = targetCaseId;
+    existing.questionId = targetQuestionId;
+    existing.clueId = targetClueId;
+    existing.sequenceNumber = targetSequence;
+    existing.hintText = targetHintText;
+    existing.penalty = targetPenalty;
+
+    if (isEnabled !== undefined) {
+      existing.isEnabled = Boolean(isEnabled);
+    }
+
+    await existing.save();
+
+    res.json(existing);
+  } catch (error) {
+    console.error("Update hint error:", error);
+
+    res.status(400).json({
+      message: error.message
+    });
+  }
+});
+
+
+router.delete("/hints/:id", async (req, res) => {
+  try {
+    if (!validId(req.params.id)) {
+      return res.status(400).json({
+        message: "Invalid hint id."
+      });
+    }
+
+    const deleted = await DetectiveHint.findByIdAndDelete(
+      req.params.id
+    );
+
+    if (!deleted) {
+      return res.status(404).json({
+        message: "Hint not found."
+      });
+    }
+
+    res.json({
+      deleted: true
+    });
+  } catch (error) {
+    console.error("Delete hint error:", error);
+
+    res.status(500).json({
+      message: "Failed to delete hint."
+    });
+  }
+});
 
 /* =========================================================
    MONITORING
@@ -1132,6 +1741,60 @@ router.post(
   }
 );
 
+/* =========================================================
+   RESET ROUND 2 ATTEMPT
+========================================================= */
+
+router.post("/reset-attempt/:userId", async (req, res) => {
+  try {
+    if (!validId(req.params.userId)) {
+      return res.status(400).json({
+        message: "Invalid user id."
+      });
+    }
+
+    const user = await User.findById(
+      req.params.userId
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "Participant not found."
+      });
+    }
+
+    const deleted =
+      await DetectiveAttempt.deleteMany({
+        participantId: user._id
+      });
+
+    await User.findByIdAndUpdate(
+      user._id,
+      {
+        round2Status: "QUALIFIED",
+        round2Score: 0
+      }
+    );
+
+    return res.json({
+      success: true,
+      message:
+        "Round 2 attempt has been reset.",
+      deletedAttempts: deleted.deletedCount
+    });
+
+  } catch (error) {
+    console.error(
+      "Reset Round 2 attempt error:",
+      error
+    );
+
+    return res.status(500).json({
+      message:
+        "Failed to reset Round 2 attempt."
+    });
+  }
+});
 
 /* =========================================================
    CSV EXPORT
@@ -1216,5 +1879,55 @@ router.get(
     }
   }
 );
+
+router.post("/reset-attempt/:userId", async (req, res) => {
+  try {
+    if (!validId(req.params.userId)) {
+      return res.status(400).json({
+        message: "Invalid participant ID."
+      });
+    }
+
+    const user = await User.findById(req.params.userId);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "Participant not found."
+      });
+    }
+
+    const activeCase = await DetectiveCase.findOne({
+      status: "PUBLISHED"
+    }).sort({ createdAt: -1 });
+
+    if (!activeCase) {
+      return res.status(404).json({
+        message: "No published Round 2 case found."
+      });
+    }
+
+    const deleted = await DetectiveAttempt.deleteOne({
+      participantId: user._id,
+      caseId: activeCase._id
+    });
+
+    await User.findByIdAndUpdate(user._id, {
+      round2Status: "QUALIFIED",
+      round2Score: 0
+    });
+
+    return res.json({
+      success: true,
+      message: "Round 2 attempt has been reset.",
+      deletedAttempt: deleted.deletedCount > 0
+    });
+  } catch (error) {
+    console.error("Reset attempt error:", error);
+
+    return res.status(500).json({
+      message: "Failed to reset Round 2 attempt."
+    });
+  }
+});
 
 export default router;

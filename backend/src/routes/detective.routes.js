@@ -1,7 +1,7 @@
 import { Router } from "express";
 import mongoose from "mongoose";
 
-import { auth } from "../middleware/auth.js";
+import { auth } from  "../middleware/auth.js";
 
 import User from "../models/User.js";
 import DetectiveCase from "../models/DetectiveCase.js";
@@ -12,6 +12,25 @@ import DetectiveAttempt from "../models/DetectiveAttempt.js";
 import DetectiveAnswer from "../models/DetectiveAnswer.js";
 
 const router = Router();
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function validId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
+
+function getUserId(req) {
+  return req.user?._id || req.user?.id;
+}
+
+function isAttemptExpired(attempt) {
+  return (
+    attempt.expiresAt &&
+    new Date() >= new Date(attempt.expiresAt)
+  );
+}
 
 async function getActiveCase() {
   return DetectiveCase.findOne({
@@ -25,7 +44,7 @@ function publicClue(clue) {
   if (!clue) return null;
 
   return {
-    id: clue._id,
+    _id: clue._id,
     sequenceNumber: clue.sequenceNumber,
     title: clue.title,
     description: clue.description,
@@ -33,58 +52,104 @@ function publicClue(clue) {
     evidenceType: clue.evidenceType,
     timestamp: clue.timestamp,
     location: clue.location,
-    relatedSuspect: clue.relatedSuspect
+    relatedSuspect: clue.relatedSuspect,
+    unlockCondition: clue.unlockCondition
   };
 }
 
-/*
- * Get an active attempt owned by the logged-in participant.
- */
+async function markAttemptExpired(attempt) {
+  if (attempt.status === "TIME_EXPIRED") {
+    return attempt;
+  }
+
+  attempt.status = "TIME_EXPIRED";
+  attempt.completedAt = new Date();
+
+  /*
+   * Prototype behaviour:
+   * Preserve whatever score the participant has
+   * already earned.
+   */
+  await attempt.save();
+
+  await User.findByIdAndUpdate(
+    attempt.participantId,
+    {
+      round2Status: "TIME_EXPIRED",
+      round2Score: Number(attempt.score || 0)
+    }
+  );
+
+  return attempt;
+}
+
 async function getAttemptOrFail(req, res) {
-  const attempt = await DetectiveAttempt.findOne({
-    _id: req.params.attemptId,
-    participantId: req.user._id
-  });
+  const { attemptId } = req.params;
+
+  if (!validId(attemptId)) {
+    res.status(400).json({
+      message: "Invalid attempt id."
+    });
+
+    return null;
+  }
+
+  const participantId = getUserId(req);
+
+  const attempt =
+    await DetectiveAttempt.findById(attemptId);
 
   if (!attempt) {
     res.status(404).json({
-      message: "Attempt not found"
+      message: "Attempt not found."
     });
 
     return null;
   }
 
   if (
-    ["CASE_COMPLETED", "TIME_EXPIRED"].includes(
-      attempt.status
-    )
+    String(attempt.participantId) !==
+    String(participantId)
   ) {
-    res.status(409).json({
-      message: "This attempt is no longer active",
-      status: attempt.status
+    res.status(403).json({
+      message: "You cannot access this attempt."
     });
 
     return null;
   }
 
   if (
-    attempt.expiresAt &&
-    new Date() > new Date(attempt.expiresAt)
+    attempt.status === "CASE_COMPLETED"
   ) {
-    attempt.status = "TIME_EXPIRED";
+    res.status(409).json({
+      message: "This case is already completed.",
+      status: attempt.status,
+      score: attempt.score
+    });
 
-    await attempt.save();
+    return null;
+  }
 
-    await User.findByIdAndUpdate(
-      attempt.participantId,
-      {
-        round2Status: "TIME_EXPIRED"
-      }
-    );
+  if (
+    attempt.status === "TIME_EXPIRED"
+  ) {
+    res.status(409).json({
+      message: "Round 2 time has expired.",
+      status: "TIME_EXPIRED",
+      score: attempt.score
+    });
+
+    return null;
+  }
+
+  if (isAttemptExpired(attempt)) {
+    await markAttemptExpired(attempt);
 
     res.status(409).json({
-      message: "Time expired",
-      status: attempt.status
+      message: "Round 2 time has expired.",
+      status: "TIME_EXPIRED",
+      score: attempt.score,
+      expiresAt: attempt.expiresAt
     });
 
     return null;
@@ -93,367 +158,544 @@ async function getAttemptOrFail(req, res) {
   return attempt;
 }
 
-/*
- * ROUND 2 ACCESS
- */
+/* =========================================================
+   ROUND 2 ACCESS
+========================================================= */
+
 router.get("/access", auth, async (req, res) => {
-  const qualified =
-    req.user.qualificationStatus === "QUALIFIED";
+  try {
+    const userId = getUserId(req);
 
-  const activeCase = await getActiveCase();
+    const user =
+      await User.findById(userId).lean();
 
-  res.json({
-    round: 2,
-    unlocked: qualified && !!activeCase,
-    qualificationStatus:
-      req.user.qualificationStatus,
-    caseAvailable: !!activeCase
-  });
-});
+    if (!user) {
+      return res.status(401).json({
+        message: "User not found."
+      });
+    }
 
-/*
- * START ROUND 2
- */
-router.post("/attempts", auth, async (req, res) => {
-  if (
-    req.user.qualificationStatus !==
-    "QUALIFIED"
-  ) {
-    return res.status(403).json({
+    const qualified =
+      user.round2Qualified === true ||
+      String(user.round2Status || "")
+        .trim()
+        .toUpperCase() === "QUALIFIED" ||
+      String(user.qualificationStatus || "")
+        .trim()
+        .toUpperCase() === "QUALIFIED";
+
+    const activeCase =
+      await getActiveCase();
+
+    return res.json({
+      round: 2,
+
+      unlocked:
+        qualified && !!activeCase,
+
+      qualificationStatus:
+        user.qualificationStatus ||
+        (
+          qualified
+            ? "QUALIFIED"
+            : "NOT_QUALIFIED"
+        ),
+
+      round2Qualified:
+        user.round2Qualified === true,
+
+      round2Status:
+        user.round2Status || null,
+
+      caseAvailable:
+        !!activeCase
+    });
+
+  } catch (error) {
+    console.error(
+      "Round 2 access error:",
+      error
+    );
+
+    return res.status(500).json({
       message:
-        "Round 2 is locked for this participant"
+        "Failed to check Round 2 access."
     });
   }
-
-  const activeCase = await getActiveCase();
-
-  if (!activeCase) {
-    return res.status(404).json({
-      message: "No published detective case"
-    });
-  }
-
-  let attempt = await DetectiveAttempt.findOne({
-    caseId: activeCase._id,
-    participantId: req.user._id
-  });
-
-  /*
-   * Completed attempts cannot be restarted.
-   */
-  if (attempt?.status === "CASE_COMPLETED") {
-    return res.status(409).json({
-      message: "Round 2 already completed"
-    });
-  }
-
-  /*
-   * If an old attempt expired, don't reuse it.
-   */
-  if (
-    attempt &&
-    attempt.expiresAt &&
-    new Date() > new Date(attempt.expiresAt)
-  ) {
-    attempt.status = "TIME_EXPIRED";
-    await attempt.save();
-
-    await User.findByIdAndUpdate(
-      req.user._id,
-      {
-        round2Status: "TIME_EXPIRED"
-      }
-    );
-
-    attempt = null;
-  }
-
-  if (!attempt) {
-    const startedAt = new Date();
-
-    const expiresAt = new Date(
-      startedAt.getTime() +
-        activeCase.timeLimit * 1000
-    );
-
-    attempt = await DetectiveAttempt.create({
-      caseId: activeCase._id,
-      participantId: req.user._id,
-      teamId: req.user.teamId,
-
-      startedAt,
-      expiresAt,
-
-      currentClue: 1,
-      currentQuestion: 1,
-
-      score: 0,
-      hintsUsed: 0,
-
-      status: "CLUE_AVAILABLE"
-    });
-
-    await User.findByIdAndUpdate(
-      req.user._id,
-      {
-        $inc: {
-          gamesPlayed: 1
-        },
-
-        round2Status: "IN_PROGRESS"
-      }
-    );
-  }
-
-  res.json({
-    attemptId: attempt._id,
-    status: attempt.status,
-    startedAt: attempt.startedAt,
-    expiresAt: attempt.expiresAt,
-    score: attempt.score
-  });
 });
+/* =========================================================
+   START ATTEMPT
+========================================================= */
 
-/*
- * GET CURRENT ATTEMPT STATE
- */
+router.post(
+  "/attempts",
+  auth,
+  async (req, res) => {
+    try {
+      const userId = getUserId(req);
+
+      const user =
+        await User.findById(userId);
+
+      if (!user) {
+        return res.status(401).json({
+          message: "User not found."
+        });
+      }
+
+      const qualified =
+  user.round2Qualified === true ||
+  String(user.round2Status || "")
+    .trim()
+    .toUpperCase() === "QUALIFIED" ||
+  String(user.qualificationStatus || "")
+    .trim()
+    .toUpperCase() === "QUALIFIED";
+      if (!qualified) {
+        return res.status(403).json({
+          message:
+            "You are not qualified for Round 2."
+        });
+      }
+
+      const caseItem =
+        await getActiveCase();
+
+      if (!caseItem) {
+        return res.status(404).json({
+          message:
+            "No published detective case is available."
+        });
+      }
+
+      let attempt =
+        await DetectiveAttempt.findOne({
+          caseId: caseItem._id,
+          participantId: userId
+        }).sort({
+          createdAt: -1
+        });
+
+      /*
+       * Existing completed attempt cannot be restarted.
+       */
+      if (
+        attempt &&
+        attempt.status === "CASE_COMPLETED"
+      ) {
+        return res.status(409).json({
+          message:
+            "You have already completed Round 2.",
+          attemptId: attempt._id,
+          status: attempt.status,
+          score: attempt.score
+        });
+      }
+
+      /*
+       * Expired attempt cannot be restarted.
+       */
+      if (
+        attempt &&
+        (
+          attempt.status === "TIME_EXPIRED" ||
+          isAttemptExpired(attempt)
+        )
+      ) {
+        await markAttemptExpired(attempt);
+
+        return res.status(409).json({
+          message:
+            "Round 2 time has expired.",
+          status: "TIME_EXPIRED",
+          score: Number(attempt.score || 0),
+          expiresAt: attempt.expiresAt
+        });
+      }
+
+      /*
+       * Resume an active attempt.
+       */
+      if (attempt) {
+        return res.json({
+          message:
+            "Existing Round 2 attempt resumed.",
+          attempt
+        });
+      }
+
+      const now = new Date();
+
+      const expiresAt =
+        new Date(
+          now.getTime() +
+          Number(caseItem.timeLimit) * 1000
+        );
+
+      attempt =
+        await DetectiveAttempt.create({
+          caseId: caseItem._id,
+          participantId: userId,
+          teamId: user.teamId || "",
+          startedAt: now,
+          expiresAt,
+          currentClue: 1,
+          currentQuestion: 1,
+          score: 0,
+          hintsUsed: 0,
+          usedHintIds: [],
+          status: "CLUE_AVAILABLE"
+        });
+
+      await User.findByIdAndUpdate(
+        userId,
+        {
+          round2Status: "IN_PROGRESS"
+        }
+      );
+
+      return res.status(201).json({
+        message: "Detective case started.",
+        attempt
+      });
+    } catch (error) {
+      console.error(
+        "Start attempt error:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to start detective case."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   GET ATTEMPT / CURRENT GAME STATE
+========================================================= */
+
 router.get(
   "/attempts/:attemptId",
   auth,
   async (req, res) => {
-    const attempt =
-      await DetectiveAttempt.findOne({
-        _id: req.params.attemptId,
-        participantId: req.user._id
-      }).populate("caseId");
+    try {
+      const attempt =
+        await getAttemptOrFail(req, res);
 
-    if (!attempt) {
-      return res.status(404).json({
-        message: "Attempt not found"
-      });
-    }
+      if (!attempt) return;
 
-    /*
-     * Timer validation happens on backend.
-     */
-    if (
-      !["CASE_COMPLETED", "TIME_EXPIRED"].includes(
-        attempt.status
-      ) &&
-      attempt.expiresAt &&
-      new Date() > new Date(attempt.expiresAt)
-    ) {
-      attempt.status = "TIME_EXPIRED";
+      const caseItem =
+        await DetectiveCase.findById(
+          attempt.caseId
+        ).lean();
 
-      await attempt.save();
+      if (!caseItem) {
+        return res.status(404).json({
+          message: "Case not found."
+        });
+      }
 
-      await User.findByIdAndUpdate(
-        attempt.participantId,
-        {
-          round2Status: "TIME_EXPIRED"
-        }
-      );
-    }
+      const clue =
+        await DetectiveClue.findOne({
+          caseId: attempt.caseId,
+          sequenceNumber:
+            attempt.currentClue,
+          isPublished: true
+        }).lean();
 
-    const clue = await DetectiveClue.findOne({
-      caseId: attempt.caseId._id,
-      sequenceNumber: attempt.currentClue,
-      isPublished: true
-    });
+      const question =
+        await DetectiveQuestion.findOne({
+          caseId: attempt.caseId,
+          sequenceNumber:
+            attempt.currentQuestion,
+          isPublished: true
+        }).lean();
 
-    const question =
-      await DetectiveQuestion.findOne({
-        caseId: attempt.caseId._id,
-        sequenceNumber: attempt.currentQuestion,
-        isPublished: true
-      });
-
-    const hints = question
-      ? await DetectiveHint.find({
-          caseId: attempt.caseId._id,
-          questionId: question._id,
+      const hints =
+        await DetectiveHint.find({
+          caseId: attempt.caseId,
           isEnabled: true
-        }).sort({
-          sequenceNumber: 1
         })
-      : [];
+          .sort({
+            sequenceNumber: 1
+          })
+          .lean();
 
-    res.json({
-      attempt: {
-        id: attempt._id,
-        status: attempt.status,
-        startedAt: attempt.startedAt,
-        expiresAt: attempt.expiresAt,
-
-        currentClue: attempt.currentClue,
-        currentQuestion:
-          attempt.currentQuestion,
-
-        score: attempt.score,
-        hintsUsed: attempt.hintsUsed,
-
-        finalAnswer:
-          attempt.finalAnswer || null
-      },
-
-      case: {
-        title: attempt.caseId.title,
-        description:
-          attempt.caseId.description,
-
-        difficulty:
-          attempt.caseId.difficulty,
-
-        suspects:
-          attempt.caseId.suspects,
-
-        /*
-         * These are safe to expose because
-         * they describe what the participant
-         * must submit, NOT the solution.
-         */
-        finalAnswerFields:
-          attempt.caseId.finalAnswerFields
-      },
-
-      clue: publicClue(clue),
-
-      question: question
-        ? {
-            id: question._id,
-            sequenceNumber:
-              question.sequenceNumber,
-
-            question: question.question,
-
-            options: question.options,
-
-            points: question.points
+      const availableHints =
+        hints.filter(hint => {
+          if (
+            hint.questionId &&
+            question &&
+            String(hint.questionId) !==
+              String(question._id)
+          ) {
+            return false;
           }
-        : null,
 
-      hints: hints.map(h => ({
-        id: h._id,
-        sequenceNumber:
-          h.sequenceNumber,
-        penalty: h.penalty
-      })),
+          if (
+            hint.clueId &&
+            clue &&
+            String(hint.clueId) !==
+              String(clue._id)
+          ) {
+            return false;
+          }
 
-      usedHintIds:
-        attempt.usedHintIds.map(id =>
-          id.toString()
+          return true;
+        });
+
+      return res.json({
+        attempt: {
+          _id: attempt._id,
+          caseId: attempt.caseId,
+          startedAt: attempt.startedAt,
+          expiresAt: attempt.expiresAt,
+          currentClue: attempt.currentClue,
+          currentQuestion:
+            attempt.currentQuestion,
+          score: attempt.score,
+          hintsUsed: attempt.hintsUsed,
+          usedHintIds:
+            attempt.usedHintIds || [],
+          status: attempt.status
+        },
+
+        case: {
+          _id: caseItem._id,
+          title: caseItem.title,
+          description: caseItem.description,
+          difficulty: caseItem.difficulty,
+          timeLimit: caseItem.timeLimit,
+          maximumScore:
+            caseItem.maximumScore,
+          suspects: caseItem.suspects,
+          finalAnswerFields:
+            caseItem.finalAnswerFields
+        },
+
+        clue: publicClue(clue),
+
+        question: question
+          ? {
+              _id: question._id,
+              sequenceNumber:
+                question.sequenceNumber,
+              clueId: question.clueId,
+              question:
+                question.question,
+              options:
+                question.options,
+              points:
+                question.points
+            }
+          : null,
+
+        hints: availableHints.map(
+          hint => ({
+            _id: hint._id,
+            sequenceNumber:
+              hint.sequenceNumber,
+            hintText:
+              hint.hintText,
+            penalty:
+              hint.penalty
+          })
         )
-    });
+      });
+    } catch (error) {
+      console.error(
+        "Get attempt error:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to load detective attempt."
+      });
+    }
   }
 );
 
-/*
- * QUESTION ANSWER
- */
+/* =========================================================
+   ANSWER QUESTION
+========================================================= */
+
 router.post(
   "/attempts/:attemptId/answer",
   auth,
   async (req, res) => {
-    const attempt =
-      await getAttemptOrFail(req, res);
+    try {
+      const attempt =
+        await getAttemptOrFail(req, res);
 
-    if (!attempt) return;
+      if (!attempt) return;
 
-    const {
-      questionId,
-      selectedOption
-    } = req.body;
+      const {
+        questionId,
+        selectedOption
+      } = req.body;
 
-    if (
-      !mongoose.isValidObjectId(questionId) ||
-      !Number.isInteger(selectedOption)
-    ) {
-      return res.status(400).json({
-        message: "Invalid answer payload"
-      });
-    }
-
-    const question =
-      await DetectiveQuestion.findOne({
-        _id: questionId,
-        caseId: attempt.caseId,
-        sequenceNumber:
-          attempt.currentQuestion,
-        isPublished: true
-      });
-
-    if (!question) {
-      return res.status(403).json({
-        message:
-          "Question is not the current question"
-      });
-    }
-
-    const existing =
-      await DetectiveAnswer.findOne({
-        attemptId: attempt._id,
-        questionId
-      });
-
-    if (existing) {
-      return res.status(409).json({
-        message: "Question already answered"
-      });
-    }
-
-    const isCorrect =
-      selectedOption === question.correctOption;
-
-    const pointsAwarded =
-      isCorrect ? question.points : 0;
-
-    await DetectiveAnswer.create({
-      attemptId: attempt._id,
-      questionId,
-      selectedOption,
-      isCorrect,
-      pointsAwarded,
-      submittedAt: new Date()
-    });
-
-    attempt.score += pointsAwarded;
-
-    const nextQuestion =
-      await DetectiveQuestion.findOne({
-        caseId: attempt.caseId,
-        sequenceNumber:
-          attempt.currentQuestion + 1,
-        isPublished: true
-      });
-
-    if (nextQuestion) {
-      attempt.currentQuestion += 1;
-
-      if (nextQuestion.clueId) {
-        const nextClue =
-          await DetectiveClue.findById(
-            nextQuestion.clueId
-          );
-
-        if (nextClue) {
-          attempt.currentClue =
-            nextClue.sequenceNumber;
-        }
+      if (!validId(questionId)) {
+        return res.status(400).json({
+          message:
+            "Invalid question id."
+        });
       }
 
-      attempt.status = "CLUE_AVAILABLE";
-    } else {
-      attempt.status = "FINAL_ANSWER";
-    }
+      if (
+        !Number.isInteger(
+          Number(selectedOption)
+        )
+      ) {
+        return res.status(400).json({
+          message:
+            "A valid option must be selected."
+        });
+      }
 
-    await attempt.save();
+      const question =
+        await DetectiveQuestion.findById(
+          questionId
+        );
 
-    req.app
-      .get("io")
-      .to("admins")
-      .emit("attempt:update", {
+      if (!question) {
+        return res.status(404).json({
+          message:
+            "Question not found."
+        });
+      }
+
+      if (
+        String(question.caseId) !==
+        String(attempt.caseId)
+      ) {
+        return res.status(403).json({
+          message:
+            "Question does not belong to this case."
+        });
+      }
+
+      if (
+        Number(question.sequenceNumber) !==
+        Number(attempt.currentQuestion)
+      ) {
+        return res.status(409).json({
+          message:
+            "This question is not currently available."
+        });
+      }
+
+      const alreadyAnswered =
+        await DetectiveAnswer.findOne({
+          attemptId: attempt._id,
+          questionId: question._id
+        });
+
+      if (alreadyAnswered) {
+        return res.status(409).json({
+          message:
+            "This question has already been answered."
+        });
+      }
+
+      const option =
+        Number(selectedOption);
+
+      if (
+        option < 0 ||
+        option >= question.options.length
+      ) {
+        return res.status(400).json({
+          message:
+            "Selected option is invalid."
+        });
+      }
+
+      const isCorrect =
+        option ===
+        Number(question.correctOption);
+
+      const pointsAwarded =
+        isCorrect
+          ? Number(question.points || 0)
+          : 0;
+
+      await DetectiveAnswer.create({
         attemptId: attempt._id,
-        participantId: req.user._id,
+        questionId: question._id,
+        selectedOption: option,
+        isCorrect,
+        pointsAwarded,
+        submittedAt: new Date()
+      });
+
+      attempt.score =
+        Number(attempt.score || 0) +
+        pointsAwarded;
+
+      /*
+       * Question completed.
+       */
+      attempt.status =
+        "QUESTION_COMPLETED";
+
+      /*
+       * Find the next question.
+       */
+      const nextQuestion =
+        await DetectiveQuestion.findOne({
+          caseId: attempt.caseId,
+          sequenceNumber: {
+            $gt:
+              question.sequenceNumber
+          },
+          isPublished: true
+        })
+          .sort({
+            sequenceNumber: 1
+          })
+          .lean();
+
+      if (nextQuestion) {
+        attempt.currentQuestion =
+          nextQuestion.sequenceNumber;
+
+        /*
+         * Move to the clue associated with
+         * the next question if configured.
+         */
+        if (nextQuestion.clueId) {
+          const nextClue =
+            await DetectiveClue.findById(
+              nextQuestion.clueId
+            ).lean();
+
+          if (nextClue) {
+            attempt.currentClue =
+              nextClue.sequenceNumber;
+          }
+        }
+
+        attempt.status =
+          "CLUE_AVAILABLE";
+      } else {
+        /*
+         * No questions remain.
+         * Participant can now submit final answer.
+         */
+        attempt.status =
+          "FINAL_ANSWER";
+      }
+
+      await attempt.save();
+
+      return res.json({
+        message:
+          "Answer submitted successfully.",
+        isCorrect,
+        pointsAwarded,
         score: attempt.score,
         status: attempt.status,
         currentClue:
@@ -461,377 +703,474 @@ router.post(
         currentQuestion:
           attempt.currentQuestion
       });
+    } catch (error) {
+      console.error(
+        "Answer question error:",
+        error
+      );
 
-    res.json({
-      correct: isCorrect,
-      pointsAwarded,
-      score: attempt.score,
-      nextStatus: attempt.status
-    });
+      return res.status(500).json({
+        message:
+          "Failed to submit answer."
+      });
+    }
   }
 );
 
-/*
- * USE HINT
- */
-router.post(
-  "/attempts/:attemptId/hints/:hintId/use",
-  auth,
-  async (req, res) => {
+/* =========================================================
+   HINT
+========================================================= */
+
+async function useHint(req, res) {
+  try {
     const attempt =
       await getAttemptOrFail(req, res);
 
     if (!attempt) return;
 
-    const hint =
-      await DetectiveHint.findOne({
-        _id: req.params.hintId,
-        caseId: attempt.caseId,
-        isEnabled: true
+    const {
+      attemptId,
+      hintId
+    } = req.params;
+
+    if (!validId(hintId)) {
+      return res.status(400).json({
+        message: "Invalid hint id."
       });
+    }
+
+    const hint =
+      await DetectiveHint.findById(
+        hintId
+      );
 
     if (!hint) {
       return res.status(404).json({
-        message: "Hint unavailable"
+        message: "Hint not found."
       });
     }
 
     if (
-      attempt.usedHintIds.some(
-        id =>
-          id.toString() ===
-          hint._id.toString()
-      )
+      String(hint.caseId) !==
+      String(attempt.caseId)
     ) {
-      return res.status(409).json({
-        message: "Hint already used"
+      return res.status(403).json({
+        message:
+          "Hint does not belong to this case."
       });
     }
+
+    if (!hint.isEnabled) {
+      return res.status(400).json({
+        message:
+          "This hint is disabled."
+      });
+    }
+
+    const alreadyUsed =
+      (attempt.usedHintIds || [])
+        .some(
+          id =>
+            String(id) ===
+            String(hint._id)
+        );
+
+    if (alreadyUsed) {
+      return res.status(409).json({
+        message:
+          "This hint has already been used."
+      });
+    }
+
+    const question =
+      await DetectiveQuestion.findOne({
+        caseId: attempt.caseId,
+        sequenceNumber:
+          attempt.currentQuestion,
+        isPublished: true
+      }).lean();
+
+    const clue =
+      await DetectiveClue.findOne({
+        caseId: attempt.caseId,
+        sequenceNumber:
+          attempt.currentClue,
+        isPublished: true
+      }).lean();
+
+    if (
+      hint.questionId &&
+      (!question ||
+        String(hint.questionId) !==
+          String(question._id))
+    ) {
+      return res.status(403).json({
+        message:
+          "This hint is not available for the current question."
+      });
+    }
+
+    if (
+      hint.clueId &&
+      (!clue ||
+        String(hint.clueId) !==
+          String(clue._id))
+    ) {
+      return res.status(403).json({
+        message:
+          "This hint is not available for the current clue."
+      });
+    }
+
+    const penalty =
+      Number(hint.penalty || 0);
+
+    attempt.score =
+      Math.max(
+        0,
+        Number(attempt.score || 0) -
+          penalty
+      );
+
+    attempt.hintsUsed =
+      Number(attempt.hintsUsed || 0) +
+      1;
+
+    attempt.usedHintIds =
+      attempt.usedHintIds || [];
 
     attempt.usedHintIds.push(
       hint._id
     );
 
-    attempt.hintsUsed += 1;
-
-    attempt.score -= hint.penalty;
-
-    attempt.status = "HINT_USED";
+    attempt.status =
+      "HINT_USED";
 
     await attempt.save();
 
-    req.app
-      .get("io")
-      .to("admins")
-      .emit("attempt:update", {
-        attemptId: attempt._id,
-        participantId: req.user._id,
-        score: attempt.score,
-        status: attempt.status,
-        hintsUsed:
-          attempt.hintsUsed
-      });
-
-    res.json({
-      hintText: hint.hintText,
-      penalty: hint.penalty,
+    return res.json({
+      message:
+        "Hint used successfully.",
+      hint: hint.hintText,
+      penalty,
       score: attempt.score,
-      hintsUsed: attempt.hintsUsed
+      hintsUsed:
+        attempt.hintsUsed,
+      status:
+        attempt.status
+    });
+  } catch (error) {
+    console.error(
+      "Use hint error:",
+      error
+    );
+
+    return res.status(500).json({
+      message:
+        "Failed to use hint."
     });
   }
+}
+
+router.post(
+  "/attempt/:attemptId/hint/:hintId",
+  auth,
+  useHint
 );
 
-/*
- * FINAL ANSWER
- */
+router.post(
+  "/attempts/:attemptId/hints/:hintId/use",
+  auth,
+  useHint
+);
+
+/* =========================================================
+   FINAL ANSWER
+========================================================= */
+
 router.post(
   "/attempts/:attemptId/final",
   auth,
   async (req, res) => {
-    const attempt =
-      await getAttemptOrFail(req, res);
+    try {
+      const attempt =
+        await getAttemptOrFail(req, res);
 
-    if (!attempt) return;
-
-    if (
-      attempt.status !== "FINAL_ANSWER"
-    ) {
-      return res.status(409).json({
-        message:
-          "Final answer is not available yet"
-      });
-    }
-
-    const activeCase =
-      await DetectiveCase.findById(
-        attempt.caseId
-      );
-
-    if (!activeCase) {
-      return res.status(404).json({
-        message: "Case not found"
-      });
-    }
-
-    const answer = req.body || {};
-
-    /*
-     * Backend determines which fields are required.
-     */
-    const requiredFields =
-      activeCase.finalAnswerFields || [];
-
-    const missingFields = [];
-
-    for (const field of requiredFields) {
-      if (field === "evidence") {
-        if (
-          !Array.isArray(
-            answer.evidenceClues
-          ) ||
-          answer.evidenceClues.length === 0
-        ) {
-          missingFields.push(field);
-        }
-
-        continue;
-      }
+      if (!attempt) return;
 
       if (
-        typeof answer[field] !== "string" ||
-        !answer[field].trim()
+        attempt.status !==
+        "FINAL_ANSWER"
       ) {
-        missingFields.push(field);
+        return res.status(409).json({
+          message:
+            "Final answer is not available yet.",
+          status:
+            attempt.status
+        });
       }
-    }
 
-    if (missingFields.length > 0) {
-      return res.status(400).json({
-        message:
-          "Complete all required final-answer fields.",
-        missingFields
-      });
-    }
+      const caseItem =
+        await DetectiveCase.findById(
+          attempt.caseId
+        ).lean();
 
-    const solution =
-      activeCase.finalSolution || {};
+      if (!caseItem) {
+        return res.status(404).json({
+          message: "Case not found."
+        });
+      }
 
-    const scoring =
-      activeCase.scoring || {};
+      const finalAnswer =
+        req.body || {};
 
-    const submittedEvidence =
-      Array.isArray(answer.evidenceClues)
-        ? answer.evidenceClues
-        : [];
+      const requiredFields =
+        caseItem.finalAnswerFields ||
+        [];
 
-    /*
-     * Calculate each component independently.
-     */
-    const culpritCorrect =
-      !requiredFields.includes("culprit") ||
-      answer.culprit === solution.culprit;
+      for (const field of requiredFields) {
+        if (
+          field === "evidence"
+        ) {
+          if (
+            !Array.isArray(
+              finalAnswer.evidence
+            ) ||
+            finalAnswer.evidence.length ===
+              0
+          ) {
+            return res.status(400).json({
+              message:
+                "Evidence is required."
+            });
+          }
 
-    const timeCorrect =
-      !requiredFields.includes("time") ||
-      answer.time === solution.time;
+          continue;
+        }
 
-    const methodCorrect =
-      !requiredFields.includes("method") ||
-      answer.method === solution.method;
+        if (
+          field === "explanation"
+        ) {
+          if (
+            !String(
+              finalAnswer.explanation ||
+                ""
+            ).trim()
+          ) {
+            return res.status(400).json({
+              message:
+                "Explanation is required."
+            });
+          }
 
-    const motiveCorrect =
-      !requiredFields.includes("motive") ||
-      answer.motive === solution.motive;
+          continue;
+        }
 
-    let evidenceCorrect = true;
-
-    if (
-      requiredFields.includes("evidence")
-    ) {
-      const expectedEvidence =
-        solution.evidenceClues || [];
-
-      /*
-       * Every configured critical evidence
-       * item must be selected.
-       */
-      evidenceCorrect =
-        expectedEvidence.length > 0 &&
-        expectedEvidence.every(
-          clueId =>
-            submittedEvidence.includes(
-              clueId
-            )
-        );
-    }
-
-    const explanationCorrect =
-      !requiredFields.includes(
-        "explanation"
-      ) ||
-      (
-        typeof answer.explanation ===
-          "string" &&
-        answer.explanation.trim().length > 0
-      );
-
-    let finalPoints = 0;
-
-    if (
-      requiredFields.includes("culprit") &&
-      culpritCorrect
-    ) {
-      finalPoints +=
-        scoring.culprit || 0;
-    }
-
-    if (
-      requiredFields.includes("time") &&
-      timeCorrect
-    ) {
-      finalPoints +=
-        scoring.time || 0;
-    }
-
-    if (
-      requiredFields.includes("method") &&
-      methodCorrect
-    ) {
-      finalPoints +=
-        scoring.method || 0;
-    }
-
-    if (
-      requiredFields.includes("motive") &&
-      motiveCorrect
-    ) {
-      finalPoints +=
-        scoring.motive || 0;
-    }
-
-    if (
-      requiredFields.includes("evidence") &&
-      evidenceCorrect
-    ) {
-      finalPoints +=
-        scoring.evidence || 0;
-    }
-
-    /*
-     * Explanation currently acts as a required
-     * field but has no automatic score because
-     * the specification doesn't define an
-     * explanation scoring value.
-     */
-    const allRequiredCorrect =
-      culpritCorrect &&
-      timeCorrect &&
-      methodCorrect &&
-      motiveCorrect &&
-      evidenceCorrect &&
-      explanationCorrect;
-
-    /*
-     * Wrong final accusation penalty.
-     *
-     * Only apply it when the configured
-     * solution itself was not completely solved.
-     */
-    if (!allRequiredCorrect) {
-      finalPoints +=
-        scoring.wrongFinal || 0;
-    }
-
-    attempt.score += finalPoints;
-
-    attempt.finalAnswer = {
-      culprit:
-        answer.culprit || "",
-
-      time:
-        answer.time || "",
-
-      method:
-        answer.method || "",
-
-      motive:
-        answer.motive || "",
-
-      evidenceClues:
-        submittedEvidence,
-
-      explanation:
-        answer.explanation || "",
-
-      result: {
-        culpritCorrect,
-        timeCorrect,
-        methodCorrect,
-        motiveCorrect,
-        evidenceCorrect,
-        explanationCorrect,
-        allCorrect: allRequiredCorrect
-      },
-
-      finalPoints
-    };
-
-    attempt.status =
-      "CASE_COMPLETED";
-
-    attempt.completedAt =
-      new Date();
-
-    await attempt.save();
-
-    /*
-     * Persist Round 2 score on the participant.
-     */
-    await User.findByIdAndUpdate(
-      attempt.participantId,
-      {
-        round2Status: "COMPLETED",
-        round2Score: attempt.score,
-
-        $inc: {
-          gamesCompleted: 1
+        if (
+          !String(
+            finalAnswer[field] || ""
+          ).trim()
+        ) {
+          return res.status(400).json({
+            message:
+              `${field} is required.`
+          });
         }
       }
-    );
 
-    /*
-     * Notify admin dashboard.
-     */
-    req.app
-      .get("io")
-      .to("admins")
-      .emit("attempt:update", {
-        attemptId: attempt._id,
-        participantId:
-          req.user._id,
+      const solution =
+        caseItem.finalSolution || {};
 
-        score: attempt.score,
+      const scoring =
+        caseItem.scoring || {};
 
+      let finalScore =
+        Number(attempt.score || 0);
+
+      let correctCount = 0;
+
+      /*
+       * Culprit
+       */
+      if (
+        finalAnswer.culprit &&
+        solution.culprit &&
+        String(
+          finalAnswer.culprit
+        ).trim().toLowerCase() ===
+          String(
+            solution.culprit
+          ).trim().toLowerCase()
+      ) {
+        finalScore +=
+          Number(scoring.culprit || 0);
+
+        correctCount++;
+      } else if (
+        finalAnswer.culprit
+      ) {
+        finalScore +=
+          Number(
+            scoring.wrongFinal || 0
+          );
+      }
+
+      /*
+       * Time
+       */
+      if (
+        finalAnswer.time &&
+        solution.time &&
+        String(
+          finalAnswer.time
+        ).trim().toLowerCase() ===
+          String(
+            solution.time
+          ).trim().toLowerCase()
+      ) {
+        finalScore +=
+          Number(scoring.time || 0);
+
+        correctCount++;
+      }
+
+      /*
+       * Method
+       */
+      if (
+        finalAnswer.method &&
+        solution.method &&
+        String(
+          finalAnswer.method
+        ).trim().toLowerCase() ===
+          String(
+            solution.method
+          ).trim().toLowerCase()
+      ) {
+        finalScore +=
+          Number(scoring.method || 0);
+
+        correctCount++;
+      }
+
+      /*
+       * Motive
+       */
+      if (
+        finalAnswer.motive &&
+        solution.motive &&
+        String(
+          finalAnswer.motive
+        ).trim().toLowerCase() ===
+          String(
+            solution.motive
+          ).trim().toLowerCase()
+      ) {
+        finalScore +=
+          Number(scoring.motive || 0);
+
+        correctCount++;
+      }
+
+      /*
+       * Evidence
+       */
+      if (
+        Array.isArray(
+          finalAnswer.evidence
+        ) &&
+        Array.isArray(
+          solution.evidenceClues
+        )
+      ) {
+        const submitted =
+          finalAnswer.evidence.map(
+            String
+          );
+
+        const expected =
+          solution.evidenceClues.map(
+            String
+          );
+
+        const allPresent =
+          expected.every(
+            item =>
+              submitted.includes(item)
+          );
+
+        if (allPresent) {
+          finalScore +=
+            Number(
+              scoring.evidence || 0
+            );
+
+          correctCount++;
+        }
+      }
+
+      /*
+       * Explanation
+       *
+       * Prototype:
+       * store it but do not score it separately.
+       */
+
+      attempt.score =
+        Math.max(
+          0,
+          finalScore
+        );
+
+      attempt.finalAnswer =
+        finalAnswer;
+
+      attempt.status =
+        "CASE_COMPLETED";
+
+      attempt.completedAt =
+        new Date();
+
+      await attempt.save();
+
+      await User.findByIdAndUpdate(
+        attempt.participantId,
+        {
+          round2Status:
+            "COMPLETED",
+          round2Score:
+            attempt.score,
+          $inc: {
+            gamesCompleted: 1
+          }
+        }
+      );
+
+      return res.json({
+        message:
+          "Detective case completed.",
         status:
           attempt.status,
-
+        score:
+          attempt.score,
+        maximumScore:
+          caseItem.maximumScore,
+        correctFinalFields:
+          correctCount,
         completedAt:
           attempt.completedAt
       });
+    } catch (error) {
+      console.error(
+        "Final answer error:",
+        error
+      );
 
-    res.json({
-      status: attempt.status,
-
-      score: attempt.score,
-
-      finalPoints,
-
-      result:
-        attempt.finalAnswer.result,
-
-      completedAt:
-        attempt.completedAt
-    });
+      return res.status(500).json({
+        message:
+          "Failed to submit final answer."
+      });
+    }
   }
 );
 

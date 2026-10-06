@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../../api.js";
 
-const emptyClue = {
+const EMPTY_CLUE = {
   sequenceNumber: 1,
   title: "",
   description: "",
@@ -15,110 +15,139 @@ const emptyClue = {
   isPublished: true
 };
 
+const EVIDENCE_TYPES = [
+  ["TEXT", "Text"],
+  ["IMAGE", "Image"],
+  ["DOCUMENT", "Document"],
+  ["CCTV", "CCTV"],
+  ["DIGITAL", "Digital Evidence"]
+];
+
+const CLASSIFICATIONS = [
+  ["SUPPORTING", "Supporting"],
+  ["NEUTRAL", "Neutral"],
+  ["MISLEADING", "Misleading"],
+  ["CRITICAL", "Critical"]
+];
+
 export default function ClueManager({ caseId }) {
   const [clues, setClues] = useState([]);
-  const [form, setForm] = useState(emptyClue);
+  const [form, setForm] = useState(EMPTY_CLUE);
   const [editingId, setEditingId] = useState(null);
 
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [success, setSuccess] = useState("");
 
-  async function loadClues() {
+  const sortedClues = useMemo(() => {
+    return [...clues].sort(
+      (a, b) =>
+        Number(a.sequenceNumber || 0) -
+        Number(b.sequenceNumber || 0)
+    );
+  }, [clues]);
+
+  useEffect(() => {
     if (!caseId) {
       setClues([]);
+      resetForm();
       return;
     }
 
-    try {
-      const { data } = await api.get(`/admin/cases/${caseId}`);
-
-      const sorted = [...(data.clues || [])].sort(
-        (a, b) =>
-          Number(a.sequenceNumber || 0) -
-          Number(b.sequenceNumber || 0)
-      );
-
-      setClues(sorted);
-    } catch (err) {
-      setError(
-        err.response?.data?.message ||
-        "Failed to load clues."
-      );
-    }
-  }
-
-  useEffect(() => {
     loadClues();
-    resetForm();
   }, [caseId]);
 
   function resetForm() {
-    setEditingId(null);
-
     setForm({
-      ...emptyClue,
-      sequenceNumber: clues.length + 1
+      ...EMPTY_CLUE,
+      sequenceNumber: Math.max(1, clues.length + 1)
     });
 
-    setError("");
-    setMessage("");
+    setEditingId(null);
+  }
+
+  async function loadClues() {
+    try {
+      setLoading(true);
+      setError("");
+
+      const { data } = await api.get(
+        `/admin/clues/case/${caseId}`
+      );
+
+      setClues(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Failed to load clues"
+      );
+    } finally {
+      setLoading(false);
+    }
   }
 
   function updateField(field, value) {
-    setForm(prev => ({
-      ...prev,
+    setForm(previous => ({
+      ...previous,
       [field]: value
     }));
   }
 
   function editClue(clue) {
+    setSuccess("");
+    setError("");
+
     setEditingId(clue._id);
 
     setForm({
       sequenceNumber: clue.sequenceNumber ?? 1,
-      title: clue.title || "",
-      description: clue.description || "",
-      evidence: clue.evidence || "",
-      evidenceType: clue.evidenceType || "TEXT",
-      timestamp: clue.timestamp || "",
-      location: clue.location || "",
-      relatedSuspect: clue.relatedSuspect || "",
-      unlockCondition: clue.unlockCondition || "",
-      classification: clue.classification || "NEUTRAL",
+      title: clue.title ?? "",
+      description: clue.description ?? "",
+      evidence: clue.evidence ?? "",
+      evidenceType: clue.evidenceType ?? "TEXT",
+      timestamp: clue.timestamp ?? "",
+      location: clue.location ?? "",
+      relatedSuspect: clue.relatedSuspect ?? "",
+      unlockCondition: clue.unlockCondition ?? "",
+      classification: clue.classification ?? "NEUTRAL",
       isPublished: clue.isPublished !== false
     });
 
-    setError("");
-    setMessage("");
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth"
+    });
   }
 
-  async function saveClue(e) {
-    e.preventDefault();
+  async function saveClue(event) {
+    event.preventDefault();
 
-    if (!caseId) {
-      setError("Select a case first.");
+    setError("");
+    setSuccess("");
+
+    if (!form.title.trim()) {
+      setError("Clue title is required.");
       return;
     }
 
-    setLoading(true);
-    setError("");
-    setMessage("");
+    if (!form.description.trim()) {
+      setError("Clue description is required.");
+      return;
+    }
+
+    if (Number(form.sequenceNumber) < 1) {
+      setError("Clue order must be at least 1.");
+      return;
+    }
 
     try {
+      setSaving(true);
+
       const payload = {
+        ...form,
         caseId,
-        sequenceNumber: Number(form.sequenceNumber),
-        title: form.title.trim(),
-        description: form.description.trim(),
-        evidence: form.evidence.trim(),
-        evidenceType: form.evidenceType,
-        timestamp: form.timestamp.trim(),
-        location: form.location.trim(),
-        relatedSuspect: form.relatedSuspect.trim(),
-        unlockCondition: form.unlockCondition.trim(),
-        classification: form.classification,
-        isPublished: Boolean(form.isPublished)
+        sequenceNumber: Number(form.sequenceNumber)
       };
 
       if (editingId) {
@@ -127,35 +156,35 @@ export default function ClueManager({ caseId }) {
           payload
         );
 
-        setMessage("Clue updated successfully.");
+        setSuccess("Clue updated successfully.");
       } else {
         await api.post("/admin/clues", payload);
 
-        setMessage("Clue created successfully.");
+        setSuccess("Clue created successfully.");
       }
 
       await loadClues();
 
-      setEditingId(null);
-
       setForm({
-        ...emptyClue,
+        ...EMPTY_CLUE,
         sequenceNumber: clues.length + 2
       });
+
+      setEditingId(null);
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Failed to save clue."
+          "Failed to save clue"
       );
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   }
 
-  async function togglePublished(clue) {
+  async function togglePublish(clue) {
     try {
       setError("");
-      setMessage("");
+      setSuccess("");
 
       await api.patch(
         `/admin/clues/${clue._id}/publish`,
@@ -164,7 +193,7 @@ export default function ClueManager({ caseId }) {
         }
       );
 
-      setMessage(
+      setSuccess(
         clue.isPublished
           ? "Clue unpublished."
           : "Clue published."
@@ -174,139 +203,481 @@ export default function ClueManager({ caseId }) {
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Unable to change clue publication status."
+          "Failed to change clue status"
       );
     }
   }
 
-  async function deleteClue(id) {
+  async function deleteClue(clue) {
     const confirmed = window.confirm(
-      "Delete this clue?"
+      `Delete "${clue.title}"? This cannot be undone.`
     );
 
-    if (!confirmed) return;
+    if (!confirmed) {
+      return;
+    }
 
     try {
       setError("");
-      setMessage("");
+      setSuccess("");
 
-      await api.delete(`/admin/clues/${id}`);
+      await api.delete(
+        `/admin/clues/${clue._id}`
+      );
 
-      if (editingId === id) {
-        setEditingId(null);
+      setSuccess("Clue deleted successfully.");
+
+      if (editingId === clue._id) {
+        resetForm();
       }
-
-      setMessage("Clue deleted.");
 
       await loadClues();
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Unable to delete clue."
+          "Failed to delete clue"
       );
     }
   }
 
   if (!caseId) {
     return (
-      <div className="card shadow-sm">
-        <div className="card-body text-center py-5">
-          <h3 className="h6">
-            Clue Management
-          </h3>
-
-          <p className="text-secondary mb-0">
-            Select or create a detective case first.
-          </p>
-        </div>
+      <div className="alert alert-warning">
+        Select a case from the Cases tab first.
       </div>
     );
   }
 
   return (
-    <div className="row g-4">
-      {/* CLUE LIST */}
-      <div className="col-12 col-xl-5">
-        <div className="card shadow-sm h-100">
-          <div className="card-body">
-            <div className="d-flex justify-content-between align-items-center mb-3">
-              <div>
-                <h3 className="h6 mb-1">
-                  Clues
-                </h3>
+    <div>
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h3 className="mb-1">
+            Clue Management
+          </h3>
 
-                <div className="small text-secondary">
-                  {clues.length} clue
-                  {clues.length === 1 ? "" : "s"}
+          <p className="text-secondary mb-0">
+            Create and manage the evidence sequence
+            for this detective case.
+          </p>
+        </div>
+
+        <span className="badge text-bg-dark">
+          {clues.length} clue
+          {clues.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {error && (
+        <div className="alert alert-danger">
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div className="alert alert-success">
+          {success}
+        </div>
+      )}
+
+      {/* FORM */}
+
+      <div className="card shadow-sm mb-4">
+        <div className="card-header fw-semibold">
+          {editingId
+            ? "Edit Clue"
+            : "Create New Clue"}
+        </div>
+
+        <div className="card-body">
+          <form onSubmit={saveClue}>
+            <div className="row g-3">
+
+              {/* ORDER */}
+
+              <div className="col-md-2">
+                <label className="form-label">
+                  Clue Order
+                </label>
+
+                <input
+                  className="form-control"
+                  type="number"
+                  min="1"
+                  value={form.sequenceNumber}
+                  onChange={e =>
+                    updateField(
+                      "sequenceNumber",
+                      e.target.value
+                    )
+                  }
+                  required
+                />
+              </div>
+
+              {/* TITLE */}
+
+              <div className="col-md-10">
+                <label className="form-label">
+                  Clue Title
+                </label>
+
+                <input
+                  className="form-control"
+                  value={form.title}
+                  onChange={e =>
+                    updateField(
+                      "title",
+                      e.target.value
+                    )
+                  }
+                  placeholder="e.g. CCTV Entry Log"
+                  required
+                />
+              </div>
+
+              {/* DESCRIPTION */}
+
+              <div className="col-12">
+                <label className="form-label">
+                  Description
+                </label>
+
+                <textarea
+                  className="form-control"
+                  rows="4"
+                  value={form.description}
+                  onChange={e =>
+                    updateField(
+                      "description",
+                      e.target.value
+                    )
+                  }
+                  placeholder="Describe what the participant discovers..."
+                  required
+                />
+              </div>
+
+              {/* EVIDENCE */}
+
+              <div className="col-12">
+                <label className="form-label">
+                  Evidence / Digital Information
+                </label>
+
+                <textarea
+                  className="form-control"
+                  rows="4"
+                  value={form.evidence}
+                  onChange={e =>
+                    updateField(
+                      "evidence",
+                      e.target.value
+                    )
+                  }
+                  placeholder="Add evidence text, encoded data, digital information, etc."
+                />
+
+                <div className="form-text">
+                  File/image upload will be added in a later phase.
                 </div>
               </div>
 
-              <button
-                className="btn btn-sm btn-dark"
-                onClick={() => {
-                  setEditingId(null);
+              {/* EVIDENCE TYPE */}
 
-                  setForm({
-                    ...emptyClue,
-                    sequenceNumber:
-                      clues.length + 1
-                  });
+              <div className="col-md-4">
+                <label className="form-label">
+                  Evidence Type
+                </label>
 
-                  setError("");
-                  setMessage("");
-                }}
-              >
-                + Add Clue
-              </button>
+                <select
+                  className="form-select"
+                  value={form.evidenceType}
+                  onChange={e =>
+                    updateField(
+                      "evidenceType",
+                      e.target.value
+                    )
+                  }
+                >
+                  {EVIDENCE_TYPES.map(
+                    ([value, label]) => (
+                      <option
+                        key={value}
+                        value={value}
+                      >
+                        {label}
+                      </option>
+                    )
+                  )}
+                </select>
+              </div>
+
+              {/* TIMESTAMP */}
+
+              <div className="col-md-4">
+                <label className="form-label">
+                  Timestamp
+                </label>
+
+                <input
+                  className="form-control"
+                  value={form.timestamp}
+                  onChange={e =>
+                    updateField(
+                      "timestamp",
+                      e.target.value
+                    )
+                  }
+                  placeholder="e.g. 8:42 PM"
+                />
+              </div>
+
+              {/* LOCATION */}
+
+              <div className="col-md-4">
+                <label className="form-label">
+                  Location
+                </label>
+
+                <input
+                  className="form-control"
+                  value={form.location}
+                  onChange={e =>
+                    updateField(
+                      "location",
+                      e.target.value
+                    )
+                  }
+                  placeholder="e.g. Research Lab"
+                />
+              </div>
+
+              {/* RELATED SUSPECT */}
+
+              <div className="col-md-6">
+                <label className="form-label">
+                  Related Suspect
+                </label>
+
+                <input
+                  className="form-control"
+                  value={form.relatedSuspect}
+                  onChange={e =>
+                    updateField(
+                      "relatedSuspect",
+                      e.target.value
+                    )
+                  }
+                  placeholder="e.g. Dr. Mehta"
+                />
+              </div>
+
+              {/* UNLOCK CONDITION */}
+
+              <div className="col-md-6">
+                <label className="form-label">
+                  Unlock Condition
+                </label>
+
+                <input
+                  className="form-control"
+                  value={form.unlockCondition}
+                  onChange={e =>
+                    updateField(
+                      "unlockCondition",
+                      e.target.value
+                    )
+                  }
+                  placeholder="e.g. Question 1 completed"
+                />
+              </div>
+
+              {/* CLASSIFICATION */}
+
+              <div className="col-md-6">
+                <label className="form-label">
+                  Internal Classification
+                </label>
+
+                <select
+                  className="form-select"
+                  value={form.classification}
+                  onChange={e =>
+                    updateField(
+                      "classification",
+                      e.target.value
+                    )
+                  }
+                >
+                  {CLASSIFICATIONS.map(
+                    ([value, label]) => (
+                      <option
+                        key={value}
+                        value={value}
+                      >
+                        {label}
+                      </option>
+                    )
+                  )}
+                </select>
+
+                <div className="form-text">
+                  This is visible only to administrators.
+                </div>
+              </div>
+
+              {/* PUBLISH */}
+
+              <div className="col-md-6 d-flex align-items-end">
+                <div className="form-check mb-2">
+                  <input
+                    className="form-check-input"
+                    type="checkbox"
+                    id="cluePublished"
+                    checked={form.isPublished}
+                    onChange={e =>
+                      updateField(
+                        "isPublished",
+                        e.target.checked
+                      )
+                    }
+                  />
+
+                  <label
+                    className="form-check-label"
+                    htmlFor="cluePublished"
+                  >
+                    Publish clue
+                  </label>
+                </div>
+              </div>
+
             </div>
 
-            {clues.length === 0 ? (
-              <div className="text-secondary">
-                No clues created yet.
-              </div>
-            ) : (
-              <div className="list-group">
-                {clues.map((clue, index) => (
-                  <div
-                    className="list-group-item"
-                    key={clue._id}
-                  >
-                    <div className="d-flex gap-3">
-                      <div>
-                        <span className="badge text-bg-dark">
-                          #{clue.sequenceNumber}
-                        </span>
-                      </div>
+            <div className="d-flex gap-2 mt-4">
+              <button
+                type="submit"
+                className="btn btn-dark"
+                disabled={saving}
+              >
+                {saving
+                  ? "Saving..."
+                  : editingId
+                  ? "Update Clue"
+                  : "Create Clue"}
+              </button>
 
-                      <div className="flex-grow-1">
+              {editingId && (
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={resetForm}
+                  disabled={saving}
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {/* CLUE LIST */}
+
+      <div className="card shadow-sm">
+        <div className="card-header fw-semibold">
+          Clue Sequence
+        </div>
+
+        <div className="card-body p-0">
+          {loading ? (
+            <div className="p-4 text-secondary">
+              Loading clues...
+            </div>
+          ) : sortedClues.length === 0 ? (
+            <div className="p-4 text-secondary">
+              No clues have been created for this case yet.
+            </div>
+          ) : (
+            <div className="table-responsive">
+              <table className="table table-hover align-middle mb-0">
+                <thead className="table-light">
+                  <tr>
+                    <th>#</th>
+                    <th>Clue</th>
+                    <th>Evidence</th>
+                    <th>Suspect</th>
+                    <th>Classification</th>
+                    <th>Status</th>
+                    <th className="text-end">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {sortedClues.map(clue => (
+                    <tr key={clue._id}>
+                      <td>
+                        <strong>
+                          {clue.sequenceNumber}
+                        </strong>
+                      </td>
+
+                      <td>
                         <div className="fw-semibold">
-                          {clue.title ||
-                            `Clue ${index + 1}`}
+                          {clue.title}
                         </div>
 
-                        <div className="small text-secondary mt-1">
+                        <small className="text-secondary">
                           {clue.evidenceType}
-                          {" · "}
-                          {clue.classification}
-                        </div>
+                        </small>
+                      </td>
 
-                        <div className="mt-2">
-                          <span
-                            className={`badge ${
-                              clue.isPublished
-                                ? "text-bg-success"
-                                : "text-bg-secondary"
-                            }`}
-                          >
-                            {clue.isPublished
-                              ? "Published"
-                              : "Hidden"}
+                      <td>
+                        {clue.evidence ? (
+                          <span>
+                            {clue.evidence.length > 70
+                              ? `${clue.evidence.slice(
+                                  0,
+                                  70
+                                )}...`
+                              : clue.evidence}
                           </span>
-                        </div>
+                        ) : (
+                          <span className="text-secondary">
+                            —
+                          </span>
+                        )}
+                      </td>
 
-                        <div className="d-flex flex-wrap gap-1 mt-2">
+                      <td>
+                        {clue.relatedSuspect || "—"}
+                      </td>
+
+                      <td>
+                        <span className="badge text-bg-secondary">
+                          {clue.classification}
+                        </span>
+                      </td>
+
+                      <td>
+                        {clue.isPublished ? (
+                          <span className="badge text-bg-success">
+                            Published
+                          </span>
+                        ) : (
+                          <span className="badge text-bg-warning">
+                            Unpublished
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="text-end">
+                        <div className="btn-group btn-group-sm">
                           <button
-                            className="btn btn-sm btn-outline-dark"
+                            className="btn btn-outline-primary"
                             onClick={() =>
                               editClue(clue)
                             }
@@ -315,9 +686,9 @@ export default function ClueManager({ caseId }) {
                           </button>
 
                           <button
-                            className="btn btn-sm btn-outline-warning"
+                            className="btn btn-outline-secondary"
                             onClick={() =>
-                              togglePublished(clue)
+                              togglePublish(clue)
                             }
                           >
                             {clue.isPublished
@@ -326,333 +697,21 @@ export default function ClueManager({ caseId }) {
                           </button>
 
                           <button
-                            className="btn btn-sm btn-outline-danger"
+                            className="btn btn-outline-danger"
                             onClick={() =>
-                              deleteClue(clue._id)
+                              deleteClue(clue)
                             }
                           >
                             Delete
                           </button>
                         </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* CLUE EDITOR */}
-      <div className="col-12 col-xl-7">
-        <div className="card shadow-sm">
-          <div className="card-body">
-            <h3 className="h6 mb-3">
-              {editingId
-                ? "Edit Clue"
-                : "Create Clue"}
-            </h3>
-
-            {error && (
-              <div className="alert alert-danger">
-                {error}
-              </div>
-            )}
-
-            {message && (
-              <div className="alert alert-success">
-                {message}
-              </div>
-            )}
-
-            <form onSubmit={saveClue}>
-              <div className="row g-3">
-                {/* SEQUENCE */}
-                <div className="col-md-4">
-                  <label className="form-label">
-                    Sequence
-                  </label>
-
-                  <input
-                    type="number"
-                    min="1"
-                    className="form-control"
-                    value={form.sequenceNumber}
-                    onChange={e =>
-                      updateField(
-                        "sequenceNumber",
-                        e.target.value
-                      )
-                    }
-                    required
-                  />
-                </div>
-
-                {/* TYPE */}
-                <div className="col-md-4">
-                  <label className="form-label">
-                    Evidence Type
-                  </label>
-
-                  <select
-                    className="form-select"
-                    value={form.evidenceType}
-                    onChange={e =>
-                      updateField(
-                        "evidenceType",
-                        e.target.value
-                      )
-                    }
-                  >
-                    <option value="TEXT">
-                      Text
-                    </option>
-
-                    <option value="IMAGE">
-                      Image
-                    </option>
-
-                    <option value="DOCUMENT">
-                      Document
-                    </option>
-
-                    <option value="CCTV">
-                      CCTV
-                    </option>
-
-                    <option value="DIGITAL">
-                      Digital
-                    </option>
-                  </select>
-                </div>
-
-                {/* CLASSIFICATION */}
-                <div className="col-md-4">
-                  <label className="form-label">
-                    Classification
-                  </label>
-
-                  <select
-                    className="form-select"
-                    value={form.classification}
-                    onChange={e =>
-                      updateField(
-                        "classification",
-                        e.target.value
-                      )
-                    }
-                  >
-                    <option value="SUPPORTING">
-                      Supporting
-                    </option>
-
-                    <option value="NEUTRAL">
-                      Neutral
-                    </option>
-
-                    <option value="MISLEADING">
-                      Misleading
-                    </option>
-
-                    <option value="CRITICAL">
-                      Critical
-                    </option>
-                  </select>
-
-                  <div className="form-text">
-                    Admin-only clue classification.
-                  </div>
-                </div>
-
-                {/* TITLE */}
-                <div className="col-12">
-                  <label className="form-label">
-                    Clue Title
-                  </label>
-
-                  <input
-                    className="form-control"
-                    value={form.title}
-                    onChange={e =>
-                      updateField(
-                        "title",
-                        e.target.value
-                      )
-                    }
-                    placeholder="Broken access card"
-                    required
-                  />
-                </div>
-
-                {/* DESCRIPTION */}
-                <div className="col-12">
-                  <label className="form-label">
-                    Description
-                  </label>
-
-                  <textarea
-                    className="form-control"
-                    rows="4"
-                    value={form.description}
-                    onChange={e =>
-                      updateField(
-                        "description",
-                        e.target.value
-                      )
-                    }
-                    placeholder="Describe what the participant discovers..."
-                    required
-                  />
-                </div>
-
-                {/* EVIDENCE */}
-                <div className="col-12">
-                  <label className="form-label">
-                    Evidence
-                  </label>
-
-                  <textarea
-                    className="form-control"
-                    rows="3"
-                    value={form.evidence}
-                    onChange={e =>
-                      updateField(
-                        "evidence",
-                        e.target.value
-                      )
-                    }
-                    placeholder="Evidence associated with this clue..."
-                  />
-                </div>
-
-                {/* TIMESTAMP */}
-                <div className="col-md-6">
-                  <label className="form-label">
-                    Timestamp
-                  </label>
-
-                  <input
-                    className="form-control"
-                    value={form.timestamp}
-                    onChange={e =>
-                      updateField(
-                        "timestamp",
-                        e.target.value
-                      )
-                    }
-                    placeholder="21:45"
-                  />
-                </div>
-
-                {/* LOCATION */}
-                <div className="col-md-6">
-                  <label className="form-label">
-                    Location
-                  </label>
-
-                  <input
-                    className="form-control"
-                    value={form.location}
-                    onChange={e =>
-                      updateField(
-                        "location",
-                        e.target.value
-                      )
-                    }
-                    placeholder="Research Lab"
-                  />
-                </div>
-
-                {/* SUSPECT */}
-                <div className="col-md-6">
-                  <label className="form-label">
-                    Related Suspect
-                  </label>
-
-                  <input
-                    className="form-control"
-                    value={form.relatedSuspect}
-                    onChange={e =>
-                      updateField(
-                        "relatedSuspect",
-                        e.target.value
-                      )
-                    }
-                    placeholder="Suspect name"
-                  />
-                </div>
-
-                {/* UNLOCK */}
-                <div className="col-md-6">
-                  <label className="form-label">
-                    Unlock Condition
-                  </label>
-
-                  <input
-                    className="form-control"
-                    value={form.unlockCondition}
-                    onChange={e =>
-                      updateField(
-                        "unlockCondition",
-                        e.target.value
-                      )
-                    }
-                    placeholder="Previous question completed"
-                  />
-                </div>
-
-                {/* PUBLISH */}
-                <div className="col-12">
-                  <div className="form-check">
-                    <input
-                      className="form-check-input"
-                      type="checkbox"
-                      id="cluePublished"
-                      checked={form.isPublished}
-                      onChange={e =>
-                        updateField(
-                          "isPublished",
-                          e.target.checked
-                        )
-                      }
-                    />
-
-                    <label
-                      className="form-check-label"
-                      htmlFor="cluePublished"
-                    >
-                      Publish this clue
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              <div className="d-flex gap-2 mt-4">
-                <button
-                  type="submit"
-                  className="btn btn-dark"
-                  disabled={loading}
-                >
-                  {loading
-                    ? "Saving..."
-                    : editingId
-                      ? "Update Clue"
-                      : "Create Clue"}
-                </button>
-
-                {editingId && (
-                  <button
-                    type="button"
-                    className="btn btn-outline-secondary"
-                    onClick={resetForm}
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </form>
-          </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>

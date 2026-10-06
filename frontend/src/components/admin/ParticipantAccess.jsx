@@ -6,12 +6,13 @@ export default function ParticipantAccess() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [resettingId, setResettingId] = useState(null);
 
   async function loadParticipants() {
     try {
-      const { data } = await api.get(
-        "/admin/participants"
-      );
+      setLoading(true);
+
+      const { data } = await api.get("/admin/participants");
 
       setParticipants(data);
       setError("");
@@ -29,10 +30,7 @@ export default function ParticipantAccess() {
     loadParticipants();
   }, []);
 
-  async function changeQualification(
-    participant,
-    action
-  ) {
+  async function changeQualification(participant, action) {
     const isUnlock = action === "unlock";
 
     const confirmed = window.confirm(
@@ -74,6 +72,44 @@ export default function ParticipantAccess() {
     }
   }
 
+  async function resetAttempt(participant) {
+    const participantName =
+      participant.name ||
+      participant.username ||
+      participant.email;
+
+    const confirmed = window.confirm(
+      `Reset Round 2 attempt for ${participantName}?\n\n` +
+        "This will delete their current Round 2 attempt and reset their Round 2 score/progress.\n\n" +
+        "They will be able to start Round 2 again."
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setResettingId(participant._id);
+      setError("");
+      setMessage("");
+
+      const { data } = await api.post(
+        `/admin/reset-attempt/${participant._id}`
+      );
+
+      setMessage(
+        data.message || "Round 2 attempt has been reset."
+      );
+
+      await loadParticipants();
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Unable to reset Round 2 attempt."
+      );
+    } finally {
+      setResettingId(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="card shadow-sm">
@@ -94,7 +130,7 @@ export default function ParticipantAccess() {
             </h2>
 
             <div className="small text-secondary">
-              Manually qualify or lock participants.
+              Manually qualify, lock, or reset participants.
             </div>
           </div>
 
@@ -138,7 +174,7 @@ export default function ParticipantAccess() {
               </thead>
 
               <tbody>
-                {participants.map(participant => (
+                {participants.map((participant) => (
                   <tr key={participant._id}>
                     <td>
                       <div className="fw-semibold">
@@ -154,9 +190,7 @@ export default function ParticipantAccess() {
                       )}
                     </td>
 
-                    <td>
-                      {participant.email}
-                    </td>
+                    <td>{participant.email}</td>
 
                     <td>
                       {participant.teamName ||
@@ -166,13 +200,11 @@ export default function ParticipantAccess() {
 
                     <td>
                       <div>
-                        {participant.round1Status ||
-                          "—"}
+                        {participant.round1Status || "—"}
                       </div>
 
                       <div className="small text-secondary">
-                        Score:{" "}
-                        {participant.round1Score ?? 0}
+                        Score: {participant.round1Score ?? 0}
                       </div>
                     </td>
 
@@ -197,8 +229,7 @@ export default function ParticipantAccess() {
                       </div>
 
                       <div className="small text-secondary">
-                        Score:{" "}
-                        {participant.round2Score ?? 0}
+                        Score: {participant.round2Score ?? 0}
                       </div>
                     </td>
 
@@ -230,6 +261,20 @@ export default function ParticipantAccess() {
                             Unlock
                           </button>
                         )}
+
+                        <button
+                          className="btn btn-sm btn-outline-warning"
+                          onClick={() =>
+                            resetAttempt(participant)
+                          }
+                          disabled={
+                            resettingId === participant._id
+                          }
+                        >
+                          {resettingId === participant._id
+                            ? "Resetting..."
+                            : "Reset Attempt"}
+                        </button>
                       </div>
                     </td>
                   </tr>

@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../api.js";
 
-const emptyQuestion = {
+const EMPTY_QUESTION = {
   clueId: "",
   sequenceNumber: 1,
   question: "",
-  options: ["", ""],
+  options: ["", "", "", ""],
   correctOption: 0,
-  points: 10,
+  points: 100,
   isPublished: true
 };
 
@@ -15,97 +15,128 @@ export default function QuestionManager({ caseId }) {
   const [questions, setQuestions] = useState([]);
   const [clues, setClues] = useState([]);
 
-  const [form, setForm] = useState(emptyQuestion);
-  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] =
+    useState(EMPTY_QUESTION);
 
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [editingId, setEditingId] =
+    useState(null);
 
-  async function loadData() {
+  const [loading, setLoading] =
+    useState(false);
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  const [success, setSuccess] =
+    useState("");
+
+  useEffect(() => {
     if (!caseId) {
       setQuestions([]);
       setClues([]);
+      resetForm([]);
       return;
     }
 
+    loadData();
+  }, [caseId]);
+
+  function resetForm(currentQuestions = questions) {
+    setForm({
+      ...EMPTY_QUESTION,
+      sequenceNumber:
+        Math.max(1, currentQuestions.length + 1)
+    });
+
+    setEditingId(null);
+  }
+
+  async function loadData() {
     try {
-      const { data } = await api.get(`/admin/cases/${caseId}`);
+      setLoading(true);
+      setError("");
 
-      const sortedClues = [...(data.clues || [])].sort(
-        (a, b) =>
-          Number(a.sequenceNumber || 0) -
-          Number(b.sequenceNumber || 0)
+      const [questionResponse, caseResponse] =
+        await Promise.all([
+          api.get(
+            `/admin/cases/${caseId}/questions`
+          ),
+          api.get(
+            `/admin/cases/${caseId}`
+          )
+        ]);
+
+      setQuestions(
+        Array.isArray(questionResponse.data)
+          ? questionResponse.data
+          : []
       );
 
-      const sortedQuestions = [...(data.questions || [])].sort(
-        (a, b) =>
-          Number(a.sequenceNumber || 0) -
-          Number(b.sequenceNumber || 0)
+      setClues(
+        Array.isArray(caseResponse.data?.clues)
+          ? caseResponse.data.clues
+          : []
       );
-
-      setClues(sortedClues);
-      setQuestions(sortedQuestions);
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Failed to load questions."
+          "Failed to load questions"
       );
+    } finally {
+      setLoading(false);
     }
   }
 
-  useEffect(() => {
-    loadData();
-    resetForm();
-  }, [caseId]);
-
-  function resetForm() {
-    setEditingId(null);
-
-    setForm({
-      ...emptyQuestion,
-      clueId: "",
-      sequenceNumber: questions.length + 1
-    });
-
-    setError("");
-    setMessage("");
-  }
-
   function updateField(field, value) {
-    setForm(prev => ({
-      ...prev,
+    setForm(previous => ({
+      ...previous,
       [field]: value
     }));
   }
 
   function updateOption(index, value) {
-    setForm(prev => ({
-      ...prev,
-      options: prev.options.map((option, i) =>
-        i === index ? value : option
-      )
-    }));
+    setForm(previous => {
+      const options = [...previous.options];
+
+      options[index] = value;
+
+      return {
+        ...previous,
+        options
+      };
+    });
   }
 
   function addOption() {
-    setForm(prev => ({
-      ...prev,
-      options: [...prev.options, ""]
+    setForm(previous => ({
+      ...previous,
+      options: [
+        ...previous.options,
+        ""
+      ]
     }));
   }
 
   function removeOption(index) {
     if (form.options.length <= 2) {
+      setError(
+        "A question must have at least 2 options."
+      );
       return;
     }
 
-    setForm(prev => {
-      const options = prev.options.filter(
-        (_, i) => i !== index
-      );
+    setForm(previous => {
+      const options =
+        previous.options.filter(
+          (_, optionIndex) =>
+            optionIndex !== index
+        );
 
-      let correctOption = prev.correctOption;
+      let correctOption =
+        previous.correctOption;
 
       if (index === correctOption) {
         correctOption = 0;
@@ -114,7 +145,7 @@ export default function QuestionManager({ caseId }) {
       }
 
       return {
-        ...prev,
+        ...previous,
         options,
         correctOption
       };
@@ -122,71 +153,99 @@ export default function QuestionManager({ caseId }) {
   }
 
   function editQuestion(question) {
+    setError("");
+    setSuccess("");
+
     setEditingId(question._id);
 
     setForm({
-      clueId: question.clueId?._id || question.clueId || "",
-      sequenceNumber: question.sequenceNumber ?? 1,
+      clueId: question.clueId || "",
+      sequenceNumber:
+        question.sequenceNumber ?? 1,
       question: question.question || "",
       options:
-        question.options?.length >= 2
+        Array.isArray(question.options) &&
+        question.options.length >= 2
           ? question.options
           : ["", ""],
-      correctOption: Number(
-        question.correctOption ?? 0
-      ),
-      points: Number(question.points ?? 0),
-      isPublished: question.isPublished !== false
+      correctOption:
+        question.correctOption ?? 0,
+      points: question.points ?? 100,
+      isPublished:
+        question.isPublished !== false
     });
 
-    setError("");
-    setMessage("");
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth"
+    });
   }
 
-  async function saveQuestion(e) {
-    e.preventDefault();
+  async function saveQuestion(event) {
+    event.preventDefault();
 
-    if (!caseId) {
-      setError("Select a case first.");
+    setError("");
+    setSuccess("");
+
+    const cleanOptions =
+      form.options.map(option =>
+        option.trim()
+      );
+
+    if (!form.question.trim()) {
+      setError("Question text is required.");
       return;
     }
 
-    if (!form.clueId) {
-      setError("Select the clue associated with this question.");
-      return;
-    }
-
-    const cleanedOptions = form.options
-      .map(option => option.trim())
-      .filter(Boolean);
-
-    if (cleanedOptions.length < 2) {
-      setError("A question needs at least two options.");
+    if (
+      cleanOptions.length < 2 ||
+      cleanOptions.some(option => !option)
+    ) {
+      setError(
+        "Every answer option must contain text."
+      );
       return;
     }
 
     if (
       form.correctOption < 0 ||
-      form.correctOption >= cleanedOptions.length
+      form.correctOption >= cleanOptions.length
     ) {
-      setError("Select a valid correct answer.");
+      setError(
+        "Please select a valid correct answer."
+      );
       return;
     }
 
-    setLoading(true);
-    setError("");
-    setMessage("");
+    if (Number(form.sequenceNumber) < 1) {
+      setError(
+        "Question order must be at least 1."
+      );
+      return;
+    }
+
+    if (Number(form.points) < 0) {
+      setError(
+        "Points cannot be negative."
+      );
+      return;
+    }
 
     try {
+      setSaving(true);
+
       const payload = {
         caseId,
-        clueId: form.clueId,
-        sequenceNumber: Number(form.sequenceNumber),
-        question: form.question.trim(),
-        options: cleanedOptions,
-        correctOption: Number(form.correctOption),
+        clueId: form.clueId || null,
+        sequenceNumber:
+          Number(form.sequenceNumber),
+        question:
+          form.question.trim(),
+        options: cleanOptions,
+        correctOption:
+          Number(form.correctOption),
         points: Number(form.points),
-        isPublished: Boolean(form.isPublished)
+        isPublished: form.isPublished
       };
 
       if (editingId) {
@@ -195,45 +254,53 @@ export default function QuestionManager({ caseId }) {
           payload
         );
 
-        setMessage("Question updated successfully.");
+        setSuccess(
+          "Question updated successfully."
+        );
       } else {
-        await api.post("/admin/questions", payload);
+        await api.post(
+          "/admin/questions",
+          payload
+        );
 
-        setMessage("Question created successfully.");
+        setSuccess(
+          "Question created successfully."
+        );
       }
 
       await loadData();
 
-      setEditingId(null);
-
       setForm({
-        ...emptyQuestion,
-        clueId: form.clueId,
-        sequenceNumber: questions.length + 2
+        ...EMPTY_QUESTION,
+        sequenceNumber:
+          questions.length + 2
       });
+
+      setEditingId(null);
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Failed to save question."
+          "Failed to save question"
       );
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   }
 
-  async function togglePublished(question) {
+  async function togglePublish(question) {
     try {
       setError("");
-      setMessage("");
+      setSuccess("");
 
       await api.patch(
         `/admin/questions/${question._id}/publish`,
         {
-          isPublished: !question.isPublished
+          isPublished:
+            !question.isPublished
         }
       );
 
-      setMessage(
+      setSuccess(
         question.isPublished
           ? "Question unpublished."
           : "Question published."
@@ -243,271 +310,156 @@ export default function QuestionManager({ caseId }) {
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Unable to change question publication status."
+          "Failed to change question status"
       );
     }
   }
 
-  async function deleteQuestion(id) {
+  async function deleteQuestion(question) {
     const confirmed = window.confirm(
-      "Delete this question?"
+      `Delete this question?\n\n"${question.question}"`
     );
 
-    if (!confirmed) return;
+    if (!confirmed) {
+      return;
+    }
 
     try {
       setError("");
-      setMessage("");
+      setSuccess("");
 
-      await api.delete(`/admin/questions/${id}`);
+      await api.delete(
+        `/admin/questions/${question._id}`
+      );
 
-      if (editingId === id) {
-        setEditingId(null);
+      setSuccess(
+        "Question deleted successfully."
+      );
+
+      if (editingId === question._id) {
+        resetForm();
       }
-
-      setMessage("Question deleted.");
 
       await loadData();
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Unable to delete question."
+          "Failed to delete question"
       );
     }
   }
 
-  function clueName(clueId) {
-    const clue = clues.find(
-      clue =>
-        String(clue._id) === String(clueId)
-    );
-
-    if (!clue) {
-      return "Unknown clue";
-    }
-
-    return `Clue ${clue.sequenceNumber}: ${clue.title}`;
-  }
-
   if (!caseId) {
     return (
-      <div className="card shadow-sm">
-        <div className="card-body text-center py-5">
-          <h3 className="h6">
-            Question Management
-          </h3>
-
-          <p className="text-secondary mb-0">
-            Select or create a detective case first.
-          </p>
-        </div>
+      <div className="alert alert-warning">
+        Select a case from the Cases tab first.
       </div>
     );
   }
 
   return (
-    <div className="row g-4">
-      {/* QUESTION LIST */}
-      <div className="col-12 col-xl-5">
-        <div className="card shadow-sm h-100">
-          <div className="card-body">
-            <div className="d-flex justify-content-between align-items-center mb-3">
-              <div>
-                <h3 className="h6 mb-1">
-                  Questions
-                </h3>
+    <div>
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h3 className="mb-1">
+            Question Management
+          </h3>
 
-                <div className="small text-secondary">
-                  {questions.length} question
-                  {questions.length === 1 ? "" : "s"}
-                </div>
-              </div>
-
-              <button
-                className="btn btn-sm btn-dark"
-                onClick={() => {
-                  setEditingId(null);
-
-                  setForm({
-                    ...emptyQuestion,
-                    clueId: clues[0]?._id || "",
-                    sequenceNumber:
-                      questions.length + 1
-                  });
-
-                  setError("");
-                  setMessage("");
-                }}
-              >
-                + Add Question
-              </button>
-            </div>
-
-            {questions.length === 0 ? (
-              <div className="text-secondary">
-                No questions created yet.
-              </div>
-            ) : (
-              <div className="list-group">
-                {questions.map(question => (
-                  <div
-                    className="list-group-item"
-                    key={question._id}
-                  >
-                    <div className="d-flex gap-3">
-                      <div>
-                        <span className="badge text-bg-dark">
-                          #{question.sequenceNumber}
-                        </span>
-                      </div>
-
-                      <div className="flex-grow-1">
-                        <div className="fw-semibold">
-                          {question.question}
-                        </div>
-
-                        <div className="small text-secondary mt-1">
-                          {clueName(
-                            question.clueId?._id ||
-                            question.clueId
-                          )}
-                        </div>
-
-                        <div className="small text-secondary">
-                          {question.options?.length || 0}{" "}
-                          options ·{" "}
-                          {question.points} points
-                        </div>
-
-                        <div className="mt-2">
-                          <span
-                            className={`badge ${
-                              question.isPublished
-                                ? "text-bg-success"
-                                : "text-bg-secondary"
-                            }`}
-                          >
-                            {question.isPublished
-                              ? "Published"
-                              : "Hidden"}
-                          </span>
-                        </div>
-
-                        <div className="d-flex flex-wrap gap-1 mt-2">
-                          <button
-                            className="btn btn-sm btn-outline-dark"
-                            onClick={() =>
-                              editQuestion(question)
-                            }
-                          >
-                            Edit
-                          </button>
-
-                          <button
-                            className="btn btn-sm btn-outline-warning"
-                            onClick={() =>
-                              togglePublished(question)
-                            }
-                          >
-                            {question.isPublished
-                              ? "Unpublish"
-                              : "Publish"}
-                          </button>
-
-                          <button
-                            className="btn btn-sm btn-outline-danger"
-                            onClick={() =>
-                              deleteQuestion(
-                                question._id
-                              )
-                            }
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <p className="text-secondary mb-0">
+            Create questions, answer options,
+            correct answers and scoring.
+          </p>
         </div>
+
+        <span className="badge text-bg-dark">
+          {questions.length} question
+          {questions.length === 1
+            ? ""
+            : "s"}
+        </span>
       </div>
 
-      {/* QUESTION EDITOR */}
-      <div className="col-12 col-xl-7">
-        <div className="card shadow-sm">
-          <div className="card-body">
-            <h3 className="h6 mb-3">
-              {editingId
-                ? "Edit Question"
-                : "Create Question"}
-            </h3>
+      {error && (
+        <div className="alert alert-danger">
+          {error}
+        </div>
+      )}
 
-            {error && (
-              <div className="alert alert-danger">
-                {error}
+      {success && (
+        <div className="alert alert-success">
+          {success}
+        </div>
+      )}
+
+      {/* QUESTION FORM */}
+
+      <div className="card shadow-sm mb-4">
+        <div className="card-header fw-semibold">
+          {editingId
+            ? "Edit Question"
+            : "Create New Question"}
+        </div>
+
+        <div className="card-body">
+          <form onSubmit={saveQuestion}>
+            <div className="row g-3">
+
+              {/* ORDER */}
+
+              <div className="col-md-2">
+                <label className="form-label">
+                  Question Order
+                </label>
+
+                <input
+                  className="form-control"
+                  type="number"
+                  min="1"
+                  value={
+                    form.sequenceNumber
+                  }
+                  onChange={e =>
+                    updateField(
+                      "sequenceNumber",
+                      e.target.value
+                    )
+                  }
+                  required
+                />
               </div>
-            )}
 
-            {message && (
-              <div className="alert alert-success">
-                {message}
-              </div>
-            )}
+              {/* CLUE */}
 
-            {clues.length === 0 && (
-              <div className="alert alert-warning">
-                Create at least one clue before creating
-                questions.
-              </div>
-            )}
+              <div className="col-md-5">
+                <label className="form-label">
+                  Associated Clue
+                </label>
 
-            <form onSubmit={saveQuestion}>
-              {/* BASIC INFO */}
-              <div className="row g-3">
-                <div className="col-md-4">
-                  <label className="form-label">
-                    Sequence
-                  </label>
+                <select
+                  className="form-select"
+                  value={form.clueId}
+                  onChange={e =>
+                    updateField(
+                      "clueId",
+                      e.target.value
+                    )
+                  }
+                >
+                  <option value="">
+                    No specific clue
+                  </option>
 
-                  <input
-                    type="number"
-                    min="1"
-                    className="form-control"
-                    value={form.sequenceNumber}
-                    onChange={e =>
-                      updateField(
-                        "sequenceNumber",
-                        e.target.value
-                      )
-                    }
-                    required
-                  />
-                </div>
-
-                <div className="col-md-8">
-                  <label className="form-label">
-                    Associated Clue
-                  </label>
-
-                  <select
-                    className="form-select"
-                    value={form.clueId}
-                    onChange={e =>
-                      updateField(
-                        "clueId",
-                        e.target.value
-                      )
-                    }
-                    required
-                  >
-                    <option value="">
-                      Select clue
-                    </option>
-
-                    {clues.map(clue => (
+                  {clues
+                    .sort(
+                      (a, b) =>
+                        Number(
+                          a.sequenceNumber
+                        ) -
+                        Number(
+                          b.sequenceNumber
+                        )
+                    )
+                    .map(clue => (
                       <option
                         key={clue._id}
                         value={clue._id}
@@ -516,191 +468,382 @@ export default function QuestionManager({ caseId }) {
                         {clue.title}
                       </option>
                     ))}
-                  </select>
-                </div>
-
-                <div className="col-12">
-                  <label className="form-label">
-                    Question
-                  </label>
-
-                  <textarea
-                    className="form-control"
-                    rows="3"
-                    value={form.question}
-                    onChange={e =>
-                      updateField(
-                        "question",
-                        e.target.value
-                      )
-                    }
-                    placeholder="What does this evidence prove?"
-                    required
-                  />
-                </div>
+                </select>
               </div>
 
-              <hr className="my-4" />
+              {/* POINTS */}
+
+              <div className="col-md-5">
+                <label className="form-label">
+                  Points
+                </label>
+
+                <input
+                  className="form-control"
+                  type="number"
+                  min="0"
+                  value={form.points}
+                  onChange={e =>
+                    updateField(
+                      "points",
+                      e.target.value
+                    )
+                  }
+                  required
+                />
+              </div>
+
+              {/* QUESTION */}
+
+              <div className="col-12">
+                <label className="form-label">
+                  Question
+                </label>
+
+                <textarea
+                  className="form-control"
+                  rows="3"
+                  value={form.question}
+                  onChange={e =>
+                    updateField(
+                      "question",
+                      e.target.value
+                    )
+                  }
+                  placeholder="e.g. Who entered the laboratory at 8:42 PM?"
+                  required
+                />
+              </div>
 
               {/* OPTIONS */}
-              <div className="d-flex justify-content-between align-items-center mb-2">
-                <h4 className="h6 mb-0">
-                  Options
-                </h4>
 
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline-dark"
-                  onClick={addOption}
-                >
-                  + Add Option
-                </button>
-              </div>
-
-              <div className="small text-secondary mb-3">
-                Select the radio button beside the correct
-                answer.
-              </div>
-
-              <div className="d-flex flex-column gap-2">
-                {form.options.map((option, index) => (
-                  <div
-                    className="input-group"
-                    key={index}
-                  >
-                    <div className="input-group-text">
-                      <input
-                        className="form-check-input mt-0"
-                        type="radio"
-                        name="correctOption"
-                        checked={
-                          Number(form.correctOption) ===
-                          index
-                        }
-                        onChange={() =>
-                          updateField(
-                            "correctOption",
-                            index
-                          )
-                        }
-                        aria-label={`Mark option ${
-                          index + 1
-                        } as correct`}
-                      />
-                    </div>
-
-                    <span className="input-group-text">
-                      {String.fromCharCode(
-                        65 + index
-                      )}
-                    </span>
-
-                    <input
-                      className="form-control"
-                      value={option}
-                      onChange={e =>
-                        updateOption(
-                          index,
-                          e.target.value
-                        )
-                      }
-                      placeholder={`Option ${
-                        index + 1
-                      }`}
-                      required
-                    />
-
-                    {form.options.length > 2 && (
-                      <button
-                        type="button"
-                        className="btn btn-outline-danger"
-                        onClick={() =>
-                          removeOption(index)
-                        }
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <hr className="my-4" />
-
-              {/* SCORE */}
-              <div className="row g-3">
-                <div className="col-md-6">
-                  <label className="form-label">
-                    Points
+              <div className="col-12">
+                <div className="d-flex justify-content-between align-items-center mb-2">
+                  <label className="form-label mb-0">
+                    Answer Options
                   </label>
 
-                  <input
-                    type="number"
-                    min="0"
-                    className="form-control"
-                    value={form.points}
-                    onChange={e =>
-                      updateField(
-                        "points",
-                        e.target.value
-                      )
-                    }
-                    required
-                  />
-                </div>
-
-                <div className="col-md-6 d-flex align-items-end">
-                  <div className="form-check mb-2">
-                    <input
-                      className="form-check-input"
-                      type="checkbox"
-                      id="questionPublished"
-                      checked={form.isPublished}
-                      onChange={e =>
-                        updateField(
-                          "isPublished",
-                          e.target.checked
-                        )
-                      }
-                    />
-
-                    <label
-                      className="form-check-label"
-                      htmlFor="questionPublished"
-                    >
-                      Publish this question
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              <div className="d-flex gap-2 mt-4">
-                <button
-                  type="submit"
-                  className="btn btn-dark"
-                  disabled={
-                    loading || clues.length === 0
-                  }
-                >
-                  {loading
-                    ? "Saving..."
-                    : editingId
-                      ? "Update Question"
-                      : "Create Question"}
-                </button>
-
-                {editingId && (
                   <button
                     type="button"
-                    className="btn btn-outline-secondary"
-                    onClick={resetForm}
+                    className="btn btn-sm btn-outline-primary"
+                    onClick={addOption}
                   >
-                    Cancel
+                    + Add Option
                   </button>
-                )}
+                </div>
+
+                <div className="d-flex flex-column gap-2">
+                  {form.options.map(
+                    (option, index) => (
+                      <div
+                        className="input-group"
+                        key={index}
+                      >
+                        <span className="input-group-text">
+                          {String.fromCharCode(
+                            65 + index
+                          )}
+                        </span>
+
+                        <input
+                          className="form-control"
+                          value={option}
+                          onChange={e =>
+                            updateOption(
+                              index,
+                              e.target.value
+                            )
+                          }
+                          placeholder={`Option ${String.fromCharCode(
+                            65 + index
+                          )}`}
+                          required
+                        />
+
+                        {form.options.length >
+                          2 && (
+                          <button
+                            type="button"
+                            className="btn btn-outline-danger"
+                            onClick={() =>
+                              removeOption(
+                                index
+                              )
+                            }
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
               </div>
-            </form>
-          </div>
+
+              {/* CORRECT ANSWER */}
+
+              <div className="col-md-6">
+                <label className="form-label">
+                  Correct Answer
+                </label>
+
+                <select
+                  className="form-select"
+                  value={
+                    form.correctOption
+                  }
+                  onChange={e =>
+                    updateField(
+                      "correctOption",
+                      Number(
+                        e.target.value
+                      )
+                    )
+                  }
+                >
+                  {form.options.map(
+                    (option, index) => (
+                      <option
+                        key={index}
+                        value={index}
+                      >
+                        Option{" "}
+                        {String.fromCharCode(
+                          65 + index
+                        )}
+                        {option
+                          ? ` — ${option}`
+                          : ""}
+                      </option>
+                    )
+                  )}
+                </select>
+
+                <div className="form-text">
+                  Correct answers are stored on the
+                  backend and are not shown to participants.
+                </div>
+              </div>
+
+              {/* PUBLISH */}
+
+              <div className="col-md-6 d-flex align-items-end">
+                <div className="form-check mb-2">
+                  <input
+                    className="form-check-input"
+                    type="checkbox"
+                    id="questionPublished"
+                    checked={
+                      form.isPublished
+                    }
+                    onChange={e =>
+                      updateField(
+                        "isPublished",
+                        e.target.checked
+                      )
+                    }
+                  />
+
+                  <label
+                    className="form-check-label"
+                    htmlFor="questionPublished"
+                  >
+                    Publish question
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="d-flex gap-2 mt-4">
+              <button
+                type="submit"
+                className="btn btn-dark"
+                disabled={saving}
+              >
+                {saving
+                  ? "Saving..."
+                  : editingId
+                  ? "Update Question"
+                  : "Create Question"}
+              </button>
+
+              {editingId && (
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={() =>
+                    resetForm()
+                  }
+                  disabled={saving}
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {/* QUESTION LIST */}
+
+      <div className="card shadow-sm">
+        <div className="card-header fw-semibold">
+          Question Sequence
+        </div>
+
+        <div className="card-body p-0">
+          {loading ? (
+            <div className="p-4 text-secondary">
+              Loading questions...
+            </div>
+          ) : questions.length === 0 ? (
+            <div className="p-4 text-secondary">
+              No questions have been created for
+              this case yet.
+            </div>
+          ) : (
+            <div className="table-responsive">
+              <table className="table table-hover align-middle mb-0">
+                <thead className="table-light">
+                  <tr>
+                    <th>#</th>
+                    <th>Question</th>
+                    <th>Clue</th>
+                    <th>Options</th>
+                    <th>Points</th>
+                    <th>Status</th>
+                    <th className="text-end">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {[...questions]
+                    .sort(
+                      (a, b) =>
+                        Number(
+                          a.sequenceNumber
+                        ) -
+                        Number(
+                          b.sequenceNumber
+                        )
+                    )
+                    .map(question => {
+                      const clue =
+                        clues.find(
+                          item =>
+                            item._id ===
+                            question.clueId
+                        );
+
+                      return (
+                        <tr
+                          key={
+                            question._id
+                          }
+                        >
+                          <td>
+                            <strong>
+                              {
+                                question.sequenceNumber
+                              }
+                            </strong>
+                          </td>
+
+                          <td>
+                            <div className="fw-semibold">
+                              {
+                                question.question
+                              }
+                            </div>
+                          </td>
+
+                          <td>
+                            {clue ? (
+                              <>
+                                Clue{" "}
+                                {
+                                  clue.sequenceNumber
+                                }
+                              </>
+                            ) : (
+                              <span className="text-secondary">
+                                —
+                              </span>
+                            )}
+                          </td>
+
+                          <td>
+                            {
+                              question.options
+                                ?.length || 0
+                            }
+                          </td>
+
+                          <td>
+                            <span className="badge text-bg-dark">
+                              {question.points}
+                            </span>
+                          </td>
+
+                          <td>
+                            {question.isPublished ? (
+                              <span className="badge text-bg-success">
+                                Published
+                              </span>
+                            ) : (
+                              <span className="badge text-bg-warning">
+                                Unpublished
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="text-end">
+                            <div className="btn-group btn-group-sm">
+                              <button
+                                className="btn btn-outline-primary"
+                                onClick={() =>
+                                  editQuestion(
+                                    question
+                                  )
+                                }
+                              >
+                                Edit
+                              </button>
+
+                              <button
+                                className="btn btn-outline-secondary"
+                                onClick={() =>
+                                  togglePublish(
+                                    question
+                                  )
+                                }
+                              >
+                                {question.isPublished
+                                  ? "Unpublish"
+                                  : "Publish"}
+                              </button>
+
+                              <button
+                                className="btn btn-outline-danger"
+                                onClick={() =>
+                                  deleteQuestion(
+                                    question
+                                  )
+                                }
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>

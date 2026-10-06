@@ -47,7 +47,9 @@ export default function Dashboard() {
 
       const response = await api.post("/detective/attempts");
 
-      const attemptId = response.data?.attemptId;
+      const attemptId =
+  response.data?.attempt?._id ??
+  response.data?.attemptId;
 
       if (!attemptId) {
         throw new Error("Backend did not return an attempt ID.");

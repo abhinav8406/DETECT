@@ -6,6 +6,7 @@ import morgan from "morgan";
 import mongoose from "mongoose";
 import { Server } from "socket.io";
 
+import clueRoutes from "./routes/clue.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import detectiveRoutes from "./routes/detective.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
@@ -49,6 +50,7 @@ app.get("/api/seed", async (_, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/detective", detectiveRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/admin/clues", clueRoutes);
 
 const io = new Server(server, {
   cors: {

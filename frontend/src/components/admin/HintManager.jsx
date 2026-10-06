@@ -1,54 +1,58 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../../api.js";
 
-const emptyHint = {
-  questionId: "",
+const EMPTY_HINT = {
   sequenceNumber: 1,
   hintText: "",
-  penalty: 20,
+  penalty: 10,
+  clueId: "",
+  questionId: "",
   isEnabled: true
 };
 
 export default function HintManager({ caseId }) {
   const [hints, setHints] = useState([]);
+  const [clues, setClues] = useState([]);
   const [questions, setQuestions] = useState([]);
 
-  const [form, setForm] = useState(emptyHint);
+  const [form, setForm] = useState(EMPTY_HINT);
+
   const [editingId, setEditingId] = useState(null);
 
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [success, setSuccess] = useState("");
 
   async function loadData() {
     if (!caseId) {
       setHints([]);
+      setClues([]);
       setQuestions([]);
       return;
     }
 
+    setLoading(true);
+    setError("");
+
     try {
-      const { data } = await api.get(`/admin/cases/${caseId}`);
+      const [hintsResponse, caseResponse] = await Promise.all([
+        api.get(`/admin/cases/${caseId}/hints`),
+        api.get(`/admin/cases/${caseId}`)
+      ]);
 
-      const sortedQuestions = [...(data.questions || [])].sort(
-        (a, b) =>
-          Number(a.sequenceNumber || 0) -
-          Number(b.sequenceNumber || 0)
-      );
+      setHints(hintsResponse.data || []);
 
-      const sortedHints = [...(data.hints || [])].sort(
-        (a, b) =>
-          Number(a.sequenceNumber || 0) -
-          Number(b.sequenceNumber || 0)
-      );
-
-      setQuestions(sortedQuestions);
-      setHints(sortedHints);
+      setClues(caseResponse.data?.clues || []);
+      setQuestions(caseResponse.data?.questions || []);
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Failed to load hints."
+          "Failed to load hint management data."
       );
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -58,72 +62,94 @@ export default function HintManager({ caseId }) {
   }, [caseId]);
 
   function resetForm() {
-    setEditingId(null);
-
     setForm({
-      ...emptyHint,
-      questionId: "",
-      sequenceNumber: hints.length + 1
+      ...EMPTY_HINT,
+      sequenceNumber:
+        hints.length > 0
+          ? Math.max(
+              ...hints.map(
+                hint => Number(hint.sequenceNumber) || 0
+              )
+            ) + 1
+          : 1
     });
 
-    setError("");
-    setMessage("");
+    setEditingId(null);
   }
 
-  function updateField(field, value) {
-    setForm(prev => ({
-      ...prev,
-      [field]: value
+  function handleChange(event) {
+    const { name, value, type, checked } = event.target;
+
+    setForm(previous => ({
+      ...previous,
+      [name]: type === "checkbox" ? checked : value
     }));
   }
 
-  function editHint(hint) {
-    setEditingId(hint._id);
-
-    setForm({
-      questionId:
-        hint.questionId?._id ||
-        hint.questionId ||
-        "",
-      sequenceNumber: hint.sequenceNumber ?? 1,
-      hintText: hint.hintText || "",
-      penalty: Number(hint.penalty ?? 0),
-      isEnabled: hint.isEnabled !== false
-    });
-
-    setError("");
-    setMessage("");
-  }
-
-  async function saveHint(e) {
-    e.preventDefault();
-
+  function validateForm() {
     if (!caseId) {
-      setError("Select a case first.");
-      return;
+      return "Select a case first.";
     }
 
-    if (!form.questionId) {
-      setError("Select the question associated with this hint.");
-      return;
+    if (
+      !Number.isInteger(Number(form.sequenceNumber)) ||
+      Number(form.sequenceNumber) < 1
+    ) {
+      return "Sequence number must be at least 1.";
     }
 
     if (!form.hintText.trim()) {
-      setError("Hint text is required.");
+      return "Hint text is required.";
+    }
+
+    if (
+      !Number.isFinite(Number(form.penalty)) ||
+      Number(form.penalty) < 0
+    ) {
+      return "Penalty must be a non-negative number.";
+    }
+
+    if (!form.clueId && !form.questionId) {
+      return "Select a clue or question for this hint.";
+    }
+
+    if (
+      hints.some(
+        hint =>
+          Number(hint.sequenceNumber) ===
+            Number(form.sequenceNumber) &&
+          hint._id !== editingId
+      )
+    ) {
+      return "This hint sequence number already exists.";
+    }
+
+    return "";
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+
+    setError("");
+    setSuccess("");
+
+    const validationError = validateForm();
+
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
-    setLoading(true);
-    setError("");
-    setMessage("");
+    setSaving(true);
 
     try {
       const payload = {
         caseId,
-        questionId: form.questionId,
         sequenceNumber: Number(form.sequenceNumber),
         hintText: form.hintText.trim(),
         penalty: Number(form.penalty),
+        clueId: form.clueId || null,
+        questionId: form.questionId || null,
         isEnabled: Boolean(form.isEnabled)
       };
 
@@ -133,45 +159,105 @@ export default function HintManager({ caseId }) {
           payload
         );
 
-        setMessage("Hint updated successfully.");
+        setSuccess("Hint updated successfully.");
       } else {
         await api.post("/admin/hints", payload);
 
-        setMessage("Hint created successfully.");
+        setSuccess("Hint created successfully.");
       }
 
       await loadData();
 
-      setEditingId(null);
-
       setForm({
-        ...emptyHint,
-        questionId: form.questionId,
-        sequenceNumber: hints.length + 2
+        ...EMPTY_HINT,
+        sequenceNumber:
+          hints.length + 1
       });
+
+      setEditingId(null);
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Failed to save hint."
+          "Failed to save hint."
       );
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   }
 
-  async function toggleEnabled(hint) {
+  function startEdit(hint) {
+    setEditingId(hint._id);
+
+    setForm({
+      sequenceNumber: hint.sequenceNumber,
+      hintText: hint.hintText || "",
+      penalty: hint.penalty ?? 10,
+      clueId:
+        typeof hint.clueId === "object"
+          ? hint.clueId?._id || ""
+          : hint.clueId || "",
+      questionId:
+        typeof hint.questionId === "object"
+          ? hint.questionId?._id || ""
+          : hint.questionId || "",
+      isEnabled: hint.isEnabled !== false
+    });
+
+    setError("");
+    setSuccess("");
+
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth"
+    });
+  }
+
+  function cancelEdit() {
+    resetForm();
+    setError("");
+    setSuccess("");
+  }
+
+  async function deleteHint(id) {
+    const confirmed = window.confirm(
+      "Delete this hint? This action cannot be undone."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setError("");
+    setSuccess("");
+
     try {
-      setError("");
-      setMessage("");
+      await api.delete(`/admin/hints/${id}`);
 
-      await api.patch(
-        `/admin/hints/${hint._id}/enable`,
-        {
-          isEnabled: !hint.isEnabled
-        }
+      setSuccess("Hint deleted successfully.");
+
+      if (editingId === id) {
+        resetForm();
+      }
+
+      await loadData();
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Failed to delete hint."
       );
+    }
+  }
 
-      setMessage(
+  async function toggleHint(hint) {
+    setError("");
+    setSuccess("");
+
+    try {
+      await api.patch(`/admin/hints/${hint._id}`, {
+        isEnabled: !hint.isEnabled
+      });
+
+      setSuccess(
         hint.isEnabled
           ? "Hint disabled."
           : "Hint enabled."
@@ -181,62 +267,49 @@ export default function HintManager({ caseId }) {
     } catch (err) {
       setError(
         err.response?.data?.message ||
-        "Unable to change hint status."
+          "Failed to change hint status."
       );
     }
   }
 
-  async function deleteHint(id) {
-    const confirmed = window.confirm(
-      "Delete this hint?"
+  function getClueTitle(clueId) {
+    const id =
+      typeof clueId === "object"
+        ? clueId?._id
+        : clueId;
+
+    const clue = clues.find(
+      item => item._id === id
     );
 
-    if (!confirmed) return;
-
-    try {
-      setError("");
-      setMessage("");
-
-      await api.delete(`/admin/hints/${id}`);
-
-      if (editingId === id) {
-        setEditingId(null);
-      }
-
-      setMessage("Hint deleted.");
-
-      await loadData();
-    } catch (err) {
-      setError(
-        err.response?.data?.message ||
-        "Unable to delete hint."
-      );
-    }
+    return clue
+      ? `Clue ${clue.sequenceNumber}: ${clue.title}`
+      : "—";
   }
 
-  function questionName(questionId) {
+  function getQuestionTitle(questionId) {
+    const id =
+      typeof questionId === "object"
+        ? questionId?._id
+        : questionId;
+
     const question = questions.find(
-      item =>
-        String(item._id) === String(questionId)
+      item => item._id === id
     );
 
-    if (!question) {
-      return "Unknown question";
-    }
-
-    return `Q${question.sequenceNumber}: ${question.question}`;
+    return question
+      ? `Q${question.sequenceNumber}: ${question.question}`
+      : "—";
   }
 
   if (!caseId) {
     return (
       <div className="card shadow-sm">
         <div className="card-body text-center py-5">
-          <h3 className="h6">
-            Hint Management
-          </h3>
-
+          <h5>No case selected</h5>
           <p className="text-secondary mb-0">
-            Select or create a detective case first.
+            Select a case from the Cases tab before
+            managing hints.
           </p>
         </div>
       </div>
@@ -244,321 +317,359 @@ export default function HintManager({ caseId }) {
   }
 
   return (
-    <div className="row g-4">
-      {/* HINT LIST */}
-      <div className="col-12 col-xl-5">
-        <div className="card shadow-sm h-100">
-          <div className="card-body">
-            <div className="d-flex justify-content-between align-items-center mb-3">
-              <div>
-                <h3 className="h6 mb-1">
-                  Hints
-                </h3>
+    <div>
+      <div className="d-flex flex-wrap justify-content-between align-items-center mb-3">
+        <div>
+          <h2 className="h4 mb-1">
+            Hint Management
+          </h2>
 
-                <div className="small text-secondary">
-                  {hints.length} hint
-                  {hints.length === 1 ? "" : "s"}
+          <p className="text-secondary mb-0">
+            Create, order, configure and enable or
+            disable hints for this detective case.
+          </p>
+        </div>
+
+        <span className="badge text-bg-primary">
+          {hints.length} hint
+          {hints.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {error && (
+        <div className="alert alert-danger">
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div className="alert alert-success">
+          {success}
+        </div>
+      )}
+
+      <div className="card shadow-sm mb-4">
+        <div className="card-header">
+          <strong>
+            {editingId
+              ? "Edit Hint"
+              : "Create Hint"}
+          </strong>
+        </div>
+
+        <div className="card-body">
+          <form onSubmit={handleSubmit}>
+            <div className="row g-3">
+
+              <div className="col-md-3">
+                <label className="form-label">
+                  Hint Order
+                </label>
+
+                <input
+                  type="number"
+                  min="1"
+                  className="form-control"
+                  name="sequenceNumber"
+                  value={form.sequenceNumber}
+                  onChange={handleChange}
+                />
+              </div>
+
+              <div className="col-md-3">
+                <label className="form-label">
+                  Penalty
+                </label>
+
+                <div className="input-group">
+                  <span className="input-group-text">
+                    -
+                  </span>
+
+                  <input
+                    type="number"
+                    min="0"
+                    className="form-control"
+                    name="penalty"
+                    value={form.penalty}
+                    onChange={handleChange}
+                  />
+
+                  <span className="input-group-text">
+                    points
+                  </span>
                 </div>
               </div>
 
-              <button
-                className="btn btn-sm btn-dark"
-                disabled={questions.length === 0}
-                onClick={() => {
-                  setEditingId(null);
+              <div className="col-md-3">
+                <label className="form-label">
+                  Associated Clue
+                </label>
 
-                  setForm({
-                    ...emptyHint,
-                    questionId:
-                      questions[0]?._id || "",
-                    sequenceNumber:
-                      hints.length + 1
-                  });
+                <select
+                  className="form-select"
+                  name="clueId"
+                  value={form.clueId}
+                  onChange={event => {
+                    setForm(previous => ({
+                      ...previous,
+                      clueId: event.target.value
+                    }));
+                  }}
+                >
+                  <option value="">
+                    No clue
+                  </option>
 
-                  setError("");
-                  setMessage("");
-                }}
-              >
-                + Add Hint
-              </button>
+                  {clues.map(clue => (
+                    <option
+                      key={clue._id}
+                      value={clue._id}
+                    >
+                      Clue {clue.sequenceNumber}:{" "}
+                      {clue.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="col-md-3">
+                <label className="form-label">
+                  Associated Question
+                </label>
+
+                <select
+                  className="form-select"
+                  name="questionId"
+                  value={form.questionId}
+                  onChange={event => {
+                    setForm(previous => ({
+                      ...previous,
+                      questionId:
+                        event.target.value
+                    }));
+                  }}
+                >
+                  <option value="">
+                    No question
+                  </option>
+
+                  {questions.map(question => (
+                    <option
+                      key={question._id}
+                      value={question._id}
+                    >
+                      Q{question.sequenceNumber}:{" "}
+                      {question.question}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="col-12">
+                <label className="form-label">
+                  Hint Text
+                </label>
+
+                <textarea
+                  className="form-control"
+                  rows="3"
+                  name="hintText"
+                  value={form.hintText}
+                  onChange={handleChange}
+                  placeholder="Example: Check the CCTV timestamp."
+                  maxLength={2000}
+                />
+              </div>
+
+              <div className="col-12">
+                <div className="form-check">
+                  <input
+                    className="form-check-input"
+                    type="checkbox"
+                    id="hintEnabled"
+                    name="isEnabled"
+                    checked={form.isEnabled}
+                    onChange={handleChange}
+                  />
+
+                  <label
+                    className="form-check-label"
+                    htmlFor="hintEnabled"
+                  >
+                    Hint enabled
+                  </label>
+                </div>
+              </div>
+
             </div>
 
-            {questions.length === 0 && (
-              <div className="alert alert-warning small">
-                Create questions before adding hints.
-              </div>
-            )}
+            <div className="d-flex gap-2 mt-4">
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={saving}
+              >
+                {saving
+                  ? "Saving..."
+                  : editingId
+                  ? "Update Hint"
+                  : "Create Hint"}
+              </button>
 
-            {hints.length === 0 ? (
-              <div className="text-secondary">
-                No hints created yet.
-              </div>
-            ) : (
-              <div className="list-group">
-                {hints.map(hint => (
-                  <div
-                    className="list-group-item"
-                    key={hint._id}
-                  >
-                    <div className="d-flex gap-3">
-                      <div>
-                        <span className="badge text-bg-dark">
-                          #{hint.sequenceNumber}
-                        </span>
-                      </div>
-
-                      <div className="flex-grow-1">
-                        <div className="fw-semibold">
-                          {hint.hintText}
-                        </div>
-
-                        <div className="small text-secondary mt-1">
-                          {questionName(
-                            hint.questionId?._id ||
-                            hint.questionId
-                          )}
-                        </div>
-
-                        <div className="small text-secondary">
-                          Penalty: {hint.penalty}
-                        </div>
-
-                        <div className="mt-2">
-                          <span
-                            className={`badge ${
-                              hint.isEnabled
-                                ? "text-bg-success"
-                                : "text-bg-secondary"
-                            }`}
-                          >
-                            {hint.isEnabled
-                              ? "Enabled"
-                              : "Disabled"}
-                          </span>
-                        </div>
-
-                        <div className="d-flex flex-wrap gap-1 mt-2">
-                          <button
-                            className="btn btn-sm btn-outline-dark"
-                            onClick={() =>
-                              editHint(hint)
-                            }
-                          >
-                            Edit
-                          </button>
-
-                          <button
-                            className="btn btn-sm btn-outline-warning"
-                            onClick={() =>
-                              toggleEnabled(hint)
-                            }
-                          >
-                            {hint.isEnabled
-                              ? "Disable"
-                              : "Enable"}
-                          </button>
-
-                          <button
-                            className="btn btn-sm btn-outline-danger"
-                            onClick={() =>
-                              deleteHint(hint._id)
-                            }
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+              {editingId && (
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={cancelEdit}
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </form>
         </div>
       </div>
 
-      {/* HINT EDITOR */}
-      <div className="col-12 col-xl-7">
-        <div className="card shadow-sm">
-          <div className="card-body">
-            <h3 className="h6 mb-3">
-              {editingId
-                ? "Edit Hint"
-                : "Create Hint"}
-            </h3>
+      <div className="card shadow-sm">
+        <div className="card-header">
+          <strong>Configured Hints</strong>
+        </div>
 
-            {error && (
-              <div className="alert alert-danger">
-                {error}
-              </div>
-            )}
+        <div className="card-body p-0">
+          {loading ? (
+            <div className="text-center py-5">
+              Loading hints...
+            </div>
+          ) : hints.length === 0 ? (
+            <div className="text-center text-secondary py-5">
+              No hints configured for this case.
+            </div>
+          ) : (
+            <div className="table-responsive">
+              <table className="table table-hover align-middle mb-0">
+                <thead className="table-light">
+                  <tr>
+                    <th>Order</th>
+                    <th>Hint</th>
+                    <th>Associated With</th>
+                    <th>Penalty</th>
+                    <th>Status</th>
+                    <th className="text-end">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
 
-            {message && (
-              <div className="alert alert-success">
-                {message}
-              </div>
-            )}
+                <tbody>
+                  {[...hints]
+                    .sort(
+                      (a, b) =>
+                        Number(a.sequenceNumber) -
+                        Number(b.sequenceNumber)
+                    )
+                    .map(hint => (
+                      <tr key={hint._id}>
+                        <td>
+                          <span className="badge text-bg-secondary">
+                            #{hint.sequenceNumber}
+                          </span>
+                        </td>
 
-            {questions.length === 0 ? (
-              <div className="text-secondary">
-                Create at least one question before
-                configuring hints.
-              </div>
-            ) : (
-              <form onSubmit={saveHint}>
-                <div className="row g-3">
-                  {/* SEQUENCE */}
-                  <div className="col-md-4">
-                    <label className="form-label">
-                      Hint Order
-                    </label>
+                        <td style={{ minWidth: "280px" }}>
+                          {hint.hintText}
+                        </td>
 
-                    <input
-                      type="number"
-                      min="1"
-                      className="form-control"
-                      value={form.sequenceNumber}
-                      onChange={e =>
-                        updateField(
-                          "sequenceNumber",
-                          e.target.value
-                        )
-                      }
-                      required
-                    />
-                  </div>
+                        <td>
+                          {hint.clueId && (
+                            <div>
+                              <span className="badge text-bg-info me-1">
+                                Clue
+                              </span>
 
-                  {/* QUESTION */}
-                  <div className="col-md-8">
-                    <label className="form-label">
-                      Associated Question
-                    </label>
+                              {getClueTitle(
+                                hint.clueId
+                              )}
+                            </div>
+                          )}
 
-                    <select
-                      className="form-select"
-                      value={form.questionId}
-                      onChange={e =>
-                        updateField(
-                          "questionId",
-                          e.target.value
-                        )
-                      }
-                      required
-                    >
-                      <option value="">
-                        Select question
-                      </option>
+                          {hint.questionId && (
+                            <div className="mt-1">
+                              <span className="badge text-bg-warning me-1">
+                                Question
+                              </span>
 
-                      {questions.map(question => (
-                        <option
-                          key={question._id}
-                          value={question._id}
-                        >
-                          Q{question.sequenceNumber} —{" "}
-                          {question.question}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                              {getQuestionTitle(
+                                hint.questionId
+                              )}
+                            </div>
+                          )}
+                        </td>
 
-                  {/* HINT TEXT */}
-                  <div className="col-12">
-                    <label className="form-label">
-                      Hint Text
-                    </label>
+                        <td>
+                          <strong>
+                            -{hint.penalty}
+                          </strong>
+                        </td>
 
-                    <textarea
-                      className="form-control"
-                      rows="5"
-                      value={form.hintText}
-                      onChange={e =>
-                        updateField(
-                          "hintText",
-                          e.target.value
-                        )
-                      }
-                      placeholder="Give the participant a useful hint without revealing the answer..."
-                      required
-                    />
-                  </div>
+                        <td>
+                          {hint.isEnabled ? (
+                            <span className="badge text-bg-success">
+                              Enabled
+                            </span>
+                          ) : (
+                            <span className="badge text-bg-secondary">
+                              Disabled
+                            </span>
+                          )}
+                        </td>
 
-                  {/* PENALTY */}
-                  <div className="col-md-6">
-                    <label className="form-label">
-                      Score Penalty
-                    </label>
+                        <td>
+                          <div className="d-flex justify-content-end gap-2">
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-primary"
+                              onClick={() =>
+                                startEdit(hint)
+                              }
+                            >
+                              Edit
+                            </button>
 
-                    <input
-                      type="number"
-                      min="0"
-                      className="form-control"
-                      value={form.penalty}
-                      onChange={e =>
-                        updateField(
-                          "penalty",
-                          e.target.value
-                        )
-                      }
-                      required
-                    />
+                            <button
+                              type="button"
+                              className={`btn btn-sm ${
+                                hint.isEnabled
+                                  ? "btn-outline-warning"
+                                  : "btn-outline-success"
+                              }`}
+                              onClick={() =>
+                                toggleHint(hint)
+                              }
+                            >
+                              {hint.isEnabled
+                                ? "Disable"
+                                : "Enable"}
+                            </button>
 
-                    <div className="form-text">
-                      Points deducted when this hint is used.
-                    </div>
-                  </div>
-
-                  {/* ENABLE */}
-                  <div className="col-md-6 d-flex align-items-end">
-                    <div className="form-check mb-2">
-                      <input
-                        className="form-check-input"
-                        type="checkbox"
-                        id="hintEnabled"
-                        checked={form.isEnabled}
-                        onChange={e =>
-                          updateField(
-                            "isEnabled",
-                            e.target.checked
-                          )
-                        }
-                      />
-
-                      <label
-                        className="form-check-label"
-                        htmlFor="hintEnabled"
-                      >
-                        Enable this hint
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="d-flex gap-2 mt-4">
-                  <button
-                    type="submit"
-                    className="btn btn-dark"
-                    disabled={loading}
-                  >
-                    {loading
-                      ? "Saving..."
-                      : editingId
-                        ? "Update Hint"
-                        : "Create Hint"}
-                  </button>
-
-                  {editingId && (
-                    <button
-                      type="button"
-                      className="btn btn-outline-secondary"
-                      onClick={resetForm}
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              </form>
-            )}
-          </div>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-danger"
+                              onClick={() =>
+                                deleteHint(hint._id)
+                              }
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>
