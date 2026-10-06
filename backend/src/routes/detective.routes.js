@@ -1,6 +1,8 @@
 import { Router } from "express";
 import mongoose from "mongoose";
+
 import { auth } from "../middleware/auth.js";
+
 import User from "../models/User.js";
 import DetectiveCase from "../models/DetectiveCase.js";
 import DetectiveClue from "../models/DetectiveClue.js";
@@ -14,7 +16,9 @@ const router = Router();
 async function getActiveCase() {
   return DetectiveCase.findOne({
     status: "PUBLISHED"
-  }).sort({ createdAt: -1 });
+  }).sort({
+    createdAt: -1
+  });
 }
 
 function publicClue(clue) {
@@ -33,6 +37,9 @@ function publicClue(clue) {
   };
 }
 
+/*
+ * Get an active attempt owned by the logged-in participant.
+ */
 async function getAttemptOrFail(req, res) {
   const attempt = await DetectiveAttempt.findOne({
     _id: req.params.attemptId,
@@ -62,10 +69,18 @@ async function getAttemptOrFail(req, res) {
 
   if (
     attempt.expiresAt &&
-    new Date() >= new Date(attempt.expiresAt)
+    new Date() > new Date(attempt.expiresAt)
   ) {
     attempt.status = "TIME_EXPIRED";
+
     await attempt.save();
+
+    await User.findByIdAndUpdate(
+      attempt.participantId,
+      {
+        round2Status: "TIME_EXPIRED"
+      }
+    );
 
     res.status(409).json({
       message: "Time expired",
@@ -78,13 +93,9 @@ async function getAttemptOrFail(req, res) {
   return attempt;
 }
 
-
 /*
-|--------------------------------------------------------------------------
-| ROUND 2 ACCESS
-|--------------------------------------------------------------------------
-*/
-
+ * ROUND 2 ACCESS
+ */
 router.get("/access", auth, async (req, res) => {
   const qualified =
     req.user.qualificationStatus === "QUALIFIED";
@@ -100,16 +111,13 @@ router.get("/access", auth, async (req, res) => {
   });
 });
 
-
 /*
-|--------------------------------------------------------------------------
-| START / RESUME ATTEMPT
-|--------------------------------------------------------------------------
-*/
-
+ * START ROUND 2
+ */
 router.post("/attempts", auth, async (req, res) => {
   if (
-    req.user.qualificationStatus !== "QUALIFIED"
+    req.user.qualificationStatus !==
+    "QUALIFIED"
   ) {
     return res.status(403).json({
       message:
@@ -128,11 +136,10 @@ router.post("/attempts", auth, async (req, res) => {
   let attempt = await DetectiveAttempt.findOne({
     caseId: activeCase._id,
     participantId: req.user._id
-  }).sort({ createdAt: -1 });
-
+  });
 
   /*
-   * A completed attempt cannot be restarted.
+   * Completed attempts cannot be restarted.
    */
   if (attempt?.status === "CASE_COMPLETED") {
     return res.status(409).json({
@@ -140,50 +147,63 @@ router.post("/attempts", auth, async (req, res) => {
     });
   }
 
-
   /*
-   * If the stored attempt has expired,
-   * mark it expired and create a fresh
-   * development attempt.
+   * If an old attempt expired, don't reuse it.
    */
   if (
     attempt &&
     attempt.expiresAt &&
-    new Date() >= new Date(attempt.expiresAt)
+    new Date() > new Date(attempt.expiresAt)
   ) {
     attempt.status = "TIME_EXPIRED";
     await attempt.save();
 
+    await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        round2Status: "TIME_EXPIRED"
+      }
+    );
+
     attempt = null;
   }
 
-
-  /*
-   * Create a new attempt if there is
-   * no active attempt.
-   */
   if (!attempt) {
     const startedAt = new Date();
 
     const expiresAt = new Date(
       startedAt.getTime() +
-      activeCase.timeLimit * 1000
+        activeCase.timeLimit * 1000
     );
 
     attempt = await DetectiveAttempt.create({
       caseId: activeCase._id,
       participantId: req.user._id,
       teamId: req.user.teamId,
+
       startedAt,
       expiresAt,
+
       currentClue: 1,
       currentQuestion: 1,
+
       score: 0,
       hintsUsed: 0,
+
       status: "CLUE_AVAILABLE"
     });
-  }
 
+    await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $inc: {
+          gamesPlayed: 1
+        },
+
+        round2Status: "IN_PROGRESS"
+      }
+    );
+  }
 
   res.json({
     attemptId: attempt._id,
@@ -194,13 +214,9 @@ router.post("/attempts", auth, async (req, res) => {
   });
 });
 
-
 /*
-|--------------------------------------------------------------------------
-| GET CURRENT ATTEMPT
-|--------------------------------------------------------------------------
-*/
-
+ * GET CURRENT ATTEMPT STATE
+ */
 router.get(
   "/attempts/:attemptId",
   auth,
@@ -217,30 +233,33 @@ router.get(
       });
     }
 
-
     /*
-     * Backend is the source of truth
-     * for timer state.
+     * Timer validation happens on backend.
      */
     if (
       !["CASE_COMPLETED", "TIME_EXPIRED"].includes(
         attempt.status
       ) &&
       attempt.expiresAt &&
-      new Date() >= new Date(attempt.expiresAt)
+      new Date() > new Date(attempt.expiresAt)
     ) {
       attempt.status = "TIME_EXPIRED";
+
       await attempt.save();
+
+      await User.findByIdAndUpdate(
+        attempt.participantId,
+        {
+          round2Status: "TIME_EXPIRED"
+        }
+      );
     }
 
-
-    const clue =
-      await DetectiveClue.findOne({
-        caseId: attempt.caseId._id,
-        sequenceNumber: attempt.currentClue,
-        isPublished: true
-      });
-
+    const clue = await DetectiveClue.findOne({
+      caseId: attempt.caseId._id,
+      sequenceNumber: attempt.currentClue,
+      isPublished: true
+    });
 
     const question =
       await DetectiveQuestion.findOne({
@@ -248,7 +267,6 @@ router.get(
         sequenceNumber: attempt.currentQuestion,
         isPublished: true
       });
-
 
     const hints = question
       ? await DetectiveHint.find({
@@ -260,24 +278,42 @@ router.get(
         })
       : [];
 
-
     res.json({
       attempt: {
         id: attempt._id,
         status: attempt.status,
         startedAt: attempt.startedAt,
         expiresAt: attempt.expiresAt,
+
         currentClue: attempt.currentClue,
-        currentQuestion: attempt.currentQuestion,
+        currentQuestion:
+          attempt.currentQuestion,
+
         score: attempt.score,
-        hintsUsed: attempt.hintsUsed
+        hintsUsed: attempt.hintsUsed,
+
+        finalAnswer:
+          attempt.finalAnswer || null
       },
 
       case: {
         title: attempt.caseId.title,
-        description: attempt.caseId.description,
-        difficulty: attempt.caseId.difficulty,
-        suspects: attempt.caseId.suspects
+        description:
+          attempt.caseId.description,
+
+        difficulty:
+          attempt.caseId.difficulty,
+
+        suspects:
+          attempt.caseId.suspects,
+
+        /*
+         * These are safe to expose because
+         * they describe what the participant
+         * must submit, NOT the solution.
+         */
+        finalAnswerFields:
+          attempt.caseId.finalAnswerFields
       },
 
       clue: publicClue(clue),
@@ -287,33 +323,33 @@ router.get(
             id: question._id,
             sequenceNumber:
               question.sequenceNumber,
+
             question: question.question,
+
             options: question.options,
+
             points: question.points
           }
         : null,
 
-      hints: hints.map((h) => ({
+      hints: hints.map(h => ({
         id: h._id,
-        sequenceNumber: h.sequenceNumber,
+        sequenceNumber:
+          h.sequenceNumber,
         penalty: h.penalty
       })),
 
       usedHintIds:
-        attempt.usedHintIds.map((id) =>
+        attempt.usedHintIds.map(id =>
           id.toString()
         )
     });
   }
 );
 
-
 /*
-|--------------------------------------------------------------------------
-| SUBMIT QUESTION ANSWER
-|--------------------------------------------------------------------------
-*/
-
+ * QUESTION ANSWER
+ */
 router.post(
   "/attempts/:attemptId/answer",
   auth,
@@ -328,7 +364,6 @@ router.post(
       selectedOption
     } = req.body;
 
-
     if (
       !mongoose.isValidObjectId(questionId) ||
       !Number.isInteger(selectedOption)
@@ -338,37 +373,33 @@ router.post(
       });
     }
 
-
     const question =
       await DetectiveQuestion.findOne({
         _id: questionId,
         caseId: attempt.caseId,
         sequenceNumber:
-          attempt.currentQuestion
+          attempt.currentQuestion,
+        isPublished: true
       });
 
-
     if (!question) {
-      return res.status(400).json({
+      return res.status(403).json({
         message:
-          "Question is not valid for the current attempt"
+          "Question is not the current question"
       });
     }
 
-
-    const alreadyAnswered =
+    const existing =
       await DetectiveAnswer.findOne({
         attemptId: attempt._id,
-        questionId: question._id
+        questionId
       });
 
-
-    if (alreadyAnswered) {
+    if (existing) {
       return res.status(409).json({
         message: "Question already answered"
       });
     }
-
 
     const isCorrect =
       selectedOption === question.correctOption;
@@ -376,54 +407,73 @@ router.post(
     const pointsAwarded =
       isCorrect ? question.points : 0;
 
-
     await DetectiveAnswer.create({
       attemptId: attempt._id,
-      questionId: question._id,
+      questionId,
       selectedOption,
       isCorrect,
       pointsAwarded,
       submittedAt: new Date()
     });
 
-
     attempt.score += pointsAwarded;
 
+    const nextQuestion =
+      await DetectiveQuestion.findOne({
+        caseId: attempt.caseId,
+        sequenceNumber:
+          attempt.currentQuestion + 1,
+        isPublished: true
+      });
 
-    /*
-     * Move to next clue/question.
-     */
-    if (attempt.currentQuestion < 4) {
+    if (nextQuestion) {
       attempt.currentQuestion += 1;
-      attempt.currentClue += 1;
+
+      if (nextQuestion.clueId) {
+        const nextClue =
+          await DetectiveClue.findById(
+            nextQuestion.clueId
+          );
+
+        if (nextClue) {
+          attempt.currentClue =
+            nextClue.sequenceNumber;
+        }
+      }
+
       attempt.status = "CLUE_AVAILABLE";
     } else {
       attempt.status = "FINAL_ANSWER";
     }
 
-
     await attempt.save();
 
+    req.app
+      .get("io")
+      .to("admins")
+      .emit("attempt:update", {
+        attemptId: attempt._id,
+        participantId: req.user._id,
+        score: attempt.score,
+        status: attempt.status,
+        currentClue:
+          attempt.currentClue,
+        currentQuestion:
+          attempt.currentQuestion
+      });
 
     res.json({
-      isCorrect,
+      correct: isCorrect,
       pointsAwarded,
       score: attempt.score,
-      status: attempt.status,
-      currentClue: attempt.currentClue,
-      currentQuestion:
-        attempt.currentQuestion
+      nextStatus: attempt.status
     });
   }
 );
 
-
 /*
-|--------------------------------------------------------------------------
-| USE HINT
-|--------------------------------------------------------------------------
-*/
-
+ * USE HINT
+ */
 router.post(
   "/attempts/:attemptId/hints/:hintId/use",
   auth,
@@ -433,7 +483,6 @@ router.post(
 
     if (!attempt) return;
 
-
     const hint =
       await DetectiveHint.findOne({
         _id: req.params.hintId,
@@ -441,17 +490,15 @@ router.post(
         isEnabled: true
       });
 
-
     if (!hint) {
       return res.status(404).json({
-        message: "Hint not found or disabled"
+        message: "Hint unavailable"
       });
     }
 
-
     if (
       attempt.usedHintIds.some(
-        (id) =>
+        id =>
           id.toString() ===
           hint._id.toString()
       )
@@ -461,32 +508,42 @@ router.post(
       });
     }
 
-
-    attempt.usedHintIds.push(hint._id);
+    attempt.usedHintIds.push(
+      hint._id
+    );
 
     attempt.hintsUsed += 1;
 
     attempt.score -= hint.penalty;
 
+    attempt.status = "HINT_USED";
 
     await attempt.save();
 
+    req.app
+      .get("io")
+      .to("admins")
+      .emit("attempt:update", {
+        attemptId: attempt._id,
+        participantId: req.user._id,
+        score: attempt.score,
+        status: attempt.status,
+        hintsUsed:
+          attempt.hintsUsed
+      });
 
     res.json({
       hintText: hint.hintText,
       penalty: hint.penalty,
-      score: attempt.score
+      score: attempt.score,
+      hintsUsed: attempt.hintsUsed
     });
   }
 );
 
-
 /*
-|--------------------------------------------------------------------------
-| FINAL ANSWER
-|--------------------------------------------------------------------------
-*/
-
+ * FINAL ANSWER
+ */
 router.post(
   "/attempts/:attemptId/final",
   auth,
@@ -496,75 +553,286 @@ router.post(
 
     if (!attempt) return;
 
-
-    if (attempt.status !== "FINAL_ANSWER") {
-      return res.status(400).json({
+    if (
+      attempt.status !== "FINAL_ANSWER"
+    ) {
+      return res.status(409).json({
         message:
           "Final answer is not available yet"
       });
     }
 
+    const activeCase =
+      await DetectiveCase.findById(
+        attempt.caseId
+      );
 
-    const {
-      culprit,
-      time,
-      method,
-      motive,
-      evidenceClues
-    } = req.body;
+    if (!activeCase) {
+      return res.status(404).json({
+        message: "Case not found"
+      });
+    }
 
-
-    let awarded = 0;
-
+    const answer = req.body || {};
 
     /*
-     * Seeded case solution:
-     * Aarav, evening, removed prototype,
-     * prevent batch rejection.
+     * Backend determines which fields are required.
      */
-    if (culprit === "Aarav") {
-      awarded += 100;
+    const requiredFields =
+      activeCase.finalAnswerFields || [];
+
+    const missingFields = [];
+
+    for (const field of requiredFields) {
+      if (field === "evidence") {
+        if (
+          !Array.isArray(
+            answer.evidenceClues
+          ) ||
+          answer.evidenceClues.length === 0
+        ) {
+          missingFields.push(field);
+        }
+
+        continue;
+      }
+
+      if (
+        typeof answer[field] !== "string" ||
+        !answer[field].trim()
+      ) {
+        missingFields.push(field);
+      }
     }
 
-    if (time === "Evening") {
-      awarded += 50;
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        message:
+          "Complete all required final-answer fields.",
+        missingFields
+      });
     }
 
-    if (method === "Removed prototype") {
-      awarded += 50;
+    const solution =
+      activeCase.finalSolution || {};
+
+    const scoring =
+      activeCase.scoring || {};
+
+    const submittedEvidence =
+      Array.isArray(answer.evidenceClues)
+        ? answer.evidenceClues
+        : [];
+
+    /*
+     * Calculate each component independently.
+     */
+    const culpritCorrect =
+      !requiredFields.includes("culprit") ||
+      answer.culprit === solution.culprit;
+
+    const timeCorrect =
+      !requiredFields.includes("time") ||
+      answer.time === solution.time;
+
+    const methodCorrect =
+      !requiredFields.includes("method") ||
+      answer.method === solution.method;
+
+    const motiveCorrect =
+      !requiredFields.includes("motive") ||
+      answer.motive === solution.motive;
+
+    let evidenceCorrect = true;
+
+    if (
+      requiredFields.includes("evidence")
+    ) {
+      const expectedEvidence =
+        solution.evidenceClues || [];
+
+      /*
+       * Every configured critical evidence
+       * item must be selected.
+       */
+      evidenceCorrect =
+        expectedEvidence.length > 0 &&
+        expectedEvidence.every(
+          clueId =>
+            submittedEvidence.includes(
+              clueId
+            )
+        );
     }
 
-    if (motive === "Prevent batch rejection") {
-      awarded += 50;
+    const explanationCorrect =
+      !requiredFields.includes(
+        "explanation"
+      ) ||
+      (
+        typeof answer.explanation ===
+          "string" &&
+        answer.explanation.trim().length > 0
+      );
+
+    let finalPoints = 0;
+
+    if (
+      requiredFields.includes("culprit") &&
+      culpritCorrect
+    ) {
+      finalPoints +=
+        scoring.culprit || 0;
     }
 
     if (
-      Array.isArray(evidenceClues) &&
-      evidenceClues.length > 0
+      requiredFields.includes("time") &&
+      timeCorrect
     ) {
-      awarded += 100;
+      finalPoints +=
+        scoring.time || 0;
     }
 
+    if (
+      requiredFields.includes("method") &&
+      methodCorrect
+    ) {
+      finalPoints +=
+        scoring.method || 0;
+    }
 
-    attempt.score += awarded;
+    if (
+      requiredFields.includes("motive") &&
+      motiveCorrect
+    ) {
+      finalPoints +=
+        scoring.motive || 0;
+    }
 
-    attempt.status = "CASE_COMPLETED";
+    if (
+      requiredFields.includes("evidence") &&
+      evidenceCorrect
+    ) {
+      finalPoints +=
+        scoring.evidence || 0;
+    }
 
-    attempt.completedAt = new Date();
+    /*
+     * Explanation currently acts as a required
+     * field but has no automatic score because
+     * the specification doesn't define an
+     * explanation scoring value.
+     */
+    const allRequiredCorrect =
+      culpritCorrect &&
+      timeCorrect &&
+      methodCorrect &&
+      motiveCorrect &&
+      evidenceCorrect &&
+      explanationCorrect;
 
+    /*
+     * Wrong final accusation penalty.
+     *
+     * Only apply it when the configured
+     * solution itself was not completely solved.
+     */
+    if (!allRequiredCorrect) {
+      finalPoints +=
+        scoring.wrongFinal || 0;
+    }
+
+    attempt.score += finalPoints;
+
+    attempt.finalAnswer = {
+      culprit:
+        answer.culprit || "",
+
+      time:
+        answer.time || "",
+
+      method:
+        answer.method || "",
+
+      motive:
+        answer.motive || "",
+
+      evidenceClues:
+        submittedEvidence,
+
+      explanation:
+        answer.explanation || "",
+
+      result: {
+        culpritCorrect,
+        timeCorrect,
+        methodCorrect,
+        motiveCorrect,
+        evidenceCorrect,
+        explanationCorrect,
+        allCorrect: allRequiredCorrect
+      },
+
+      finalPoints
+    };
+
+    attempt.status =
+      "CASE_COMPLETED";
+
+    attempt.completedAt =
+      new Date();
 
     await attempt.save();
 
+    /*
+     * Persist Round 2 score on the participant.
+     */
+    await User.findByIdAndUpdate(
+      attempt.participantId,
+      {
+        round2Status: "COMPLETED",
+        round2Score: attempt.score,
+
+        $inc: {
+          gamesCompleted: 1
+        }
+      }
+    );
+
+    /*
+     * Notify admin dashboard.
+     */
+    req.app
+      .get("io")
+      .to("admins")
+      .emit("attempt:update", {
+        attemptId: attempt._id,
+        participantId:
+          req.user._id,
+
+        score: attempt.score,
+
+        status:
+          attempt.status,
+
+        completedAt:
+          attempt.completedAt
+      });
 
     res.json({
       status: attempt.status,
-      awarded,
+
       score: attempt.score,
+
+      finalPoints,
+
+      result:
+        attempt.finalAnswer.result,
+
       completedAt:
         attempt.completedAt
     });
   }
 );
-
 
 export default router;

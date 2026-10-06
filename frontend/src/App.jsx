@@ -3,33 +3,63 @@ import {
   BrowserRouter,
   Routes,
   Route,
-  Navigate,
+  Navigate
 } from "react-router-dom";
 
 import Login from "./pages/Login.jsx";
+import Round2Gate from "./pages/Round2Gate.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import DetectiveCase from "./pages/DetectiveCase.jsx";
+import AdminDashboard from "./pages/AdminDashboard.jsx";
 
-function ProtectedRoute({ children }) {
-  const token = localStorage.getItem("token");
-  const user = JSON.parse(localStorage.getItem("user") || "null");
+function getUser() {
+  try {
+    return JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    return null;
+  }
+}
 
-  if (!token || !user) {
+function Protected({ children, admin = false }) {
+  const user = getUser();
+
+  if (!user) {
     return <Navigate to="/login" replace />;
+  }
+
+  const role = String(user.role || "").trim().toLowerCase();
+
+  // Admin-only route
+  if (admin) {
+    if (role !== "admin") {
+      return <Navigate to="/dashboard" replace />;
+    }
+
+    return children;
+  }
+
+  // Participant routes
+  if (role === "admin") {
+    return <Navigate to="/admin" replace />;
   }
 
   return children;
 }
 
-function LoginRoute() {
-  const token = localStorage.getItem("token");
-  const user = JSON.parse(localStorage.getItem("user") || "null");
+function HomeRedirect() {
+  const user = getUser();
 
-  if (token && user) {
-    return <Navigate to="/dashboard" replace />;
+  if (!user) {
+    return <Navigate to="/login" replace />;
   }
 
-  return <Login />;
+  const role = String(user.role || "").trim().toLowerCase();
+
+  if (role === "admin") {
+    return <Navigate to="/admin" replace />;
+  }
+
+  return <Navigate to="/dashboard" replace />;
 }
 
 export default function App() {
@@ -40,16 +70,32 @@ export default function App() {
         {/* Login */}
         <Route
           path="/login"
-          element={<LoginRoute />}
+          element={<Login />}
+        />
+
+        {/* Root */}
+        <Route
+          path="/"
+          element={<HomeRedirect />}
         />
 
         {/* Participant Dashboard */}
         <Route
           path="/dashboard"
           element={
-            <ProtectedRoute>
+            <Protected>
               <Dashboard />
-            </ProtectedRoute>
+            </Protected>
+          }
+        />
+
+        {/* Round 2 Gate */}
+        <Route
+          path="/round2"
+          element={
+            <Protected>
+              <Round2Gate />
+            </Protected>
           }
         />
 
@@ -57,22 +103,26 @@ export default function App() {
         <Route
           path="/round2/case"
           element={
-            <ProtectedRoute>
+            <Protected>
               <DetectiveCase />
-            </ProtectedRoute>
+            </Protected>
           }
         />
 
-        {/* Default */}
+        {/* Admin Panel */}
         <Route
-          path="/"
-          element={<Navigate to="/dashboard" replace />}
+          path="/admin"
+          element={
+            <Protected admin>
+              <AdminDashboard />
+            </Protected>
+          }
         />
 
-        {/* Unknown routes */}
+        {/* Anything unknown */}
         <Route
           path="*"
-          element={<Navigate to="/dashboard" replace />}
+          element={<HomeRedirect />}
         />
 
       </Routes>

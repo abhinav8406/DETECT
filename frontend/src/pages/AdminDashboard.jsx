@@ -1,91 +1,274 @@
-import React, { useEffect, useState } from "react";
-import { api } from "../api.js";
-import { io } from "socket.io-client";
+import React, {
+  useState
+} from "react";
+
+import {
+  useNavigate
+} from "react-router-dom";
+
+import CaseManager
+  from "../components/admin/CaseManager.jsx";
+
+import ClueManager
+  from "../components/admin/ClueManager.jsx";
+
+import QuestionManager
+  from "../components/admin/QuestionManager.jsx";
+
+import HintManager
+  from "../components/admin/HintManager.jsx";
+
+import MonitoringTable
+  from "../components/admin/MonitoringTable.jsx";
+
+import ParticipantAccess
+  from "../components/admin/ParticipantAccess.jsx";
+
+const tabs = [
+  {
+    id: "cases",
+    label: "Cases"
+  },
+  {
+    id: "clues",
+    label: "Clues"
+  },
+  {
+    id: "questions",
+    label: "Questions"
+  },
+  {
+    id: "hints",
+    label: "Hints"
+  },
+  {
+    id: "monitoring",
+    label: "Live Monitoring"
+  },
+  {
+    id: "participants",
+    label: "Participants"
+  }
+];
 
 export default function AdminDashboard() {
-  const [cases, setCases] = useState([]);
-  const [monitoring, setMonitoring] = useState([]);
 
-  async function load() {
-    const [c, m] = await Promise.all([
-      api.get("/admin/cases"),
-      api.get("/admin/monitoring")
-    ]);
-    setCases(c.data);
-    setMonitoring(m.data);
+  const navigate =
+    useNavigate();
+
+  const [
+    activeTab,
+    setActiveTab
+  ] = useState("cases");
+
+  const [
+    selectedCase,
+    setSelectedCase
+  ] = useState(null);
+
+
+  function logout() {
+
+    localStorage.removeItem(
+      "token"
+    );
+
+    localStorage.removeItem(
+      "user"
+    );
+
+    navigate(
+      "/login",
+      {
+        replace: true
+      }
+    );
   }
 
-  useEffect(() => {
-    load();
-    const socket = io(import.meta.env.VITE_SOCKET_URL || "http://localhost:5000");
-    socket.emit("admin:join");
-    socket.on("attempt:update", load);
-    return () => socket.disconnect();
-  }, []);
 
-  async function publish(id, status) {
-    await api.patch(`/admin/cases/${id}`, { status });
-    load();
+  function handleCaseSelect(
+    caseItem
+  ) {
+
+    setSelectedCase(
+      caseItem
+    );
+
+    setActiveTab(
+      "clues"
+    );
   }
+
 
   return (
-    <div className="container-fluid py-4">
-      <div className="d-flex justify-content-between mb-4">
-        <div>
-          <div className="small text-secondary">ADMIN PANEL</div>
-          <h1 className="h3">Detective Case Management</h1>
-        </div>
-        <a className="btn btn-outline-dark" href={`${import.meta.env.VITE_API_URL || "http://localhost:5000/api"}/admin/export?fields=name,username,email,teamId,teamName,qualificationStatus`} target="_blank">
-          Export CSV
-        </a>
-      </div>
+    <div className="min-vh-100 bg-body-tertiary">
 
-      <div className="card shadow-sm mb-4">
-        <div className="card-body">
-          <h2 className="h5">Case Management</h2>
-          <div className="table-responsive">
-            <table className="table align-middle">
-              <thead><tr><th>Case</th><th>Difficulty</th><th>Time</th><th>Status</th><th /></tr></thead>
-              <tbody>
-                {cases.map(c => (
-                  <tr key={c._id}>
-                    <td>{c.title}</td>
-                    <td>{c.difficulty}</td>
-                    <td>{c.timeLimit}s</td>
-                    <td>{c.status}</td>
-                    <td>
-                      <button className="btn btn-sm btn-dark" onClick={() => publish(c._id, c.status === "PUBLISHED" ? "DRAFT" : "PUBLISHED")}>
-                        {c.status === "PUBLISHED" ? "Unpublish" : "Publish"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+      <nav className="navbar bg-dark navbar-dark">
 
-      <div className="card shadow-sm">
-        <div className="card-body">
-          <h2 className="h5">Live Monitoring</h2>
-          <div className="table-responsive">
-            <table className="table">
-              <thead><tr><th>Participant</th><th>Status</th><th>Clue</th><th>Question</th><th>Hints</th><th>Score</th><th>Time</th></tr></thead>
-              <tbody>
-                {monitoring.map((r, i) => (
-                  <tr key={r.participant?.id || i}>
-                    <td>{r.participant?.name}<div className="small text-secondary">{r.participant?.email}</div></td>
-                    <td>{r.status}</td><td>{r.currentClue}</td><td>{r.currentQuestion}</td>
-                    <td>{r.hintsUsed}</td><td>{r.score}</td>
-                    <td>{Math.ceil(r.timeRemaining / 1000)}s</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div className="container-fluid px-3 px-lg-4">
+
+          <div>
+
+            <span className="navbar-brand fw-semibold">
+              Fest Detective
+            </span>
+
+            <span className="badge text-bg-danger ms-2">
+              ADMIN
+            </span>
+
           </div>
+
+          <button
+            className="btn btn-outline-light btn-sm"
+            onClick={
+              logout
+            }
+          >
+            Logout
+          </button>
+
         </div>
-      </div>
+
+      </nav>
+
+
+      <main className="container-fluid px-3 px-lg-4 py-4">
+
+        <div className="mb-4">
+
+          <h1 className="h3 mb-1">
+            Detective Case Management
+          </h1>
+
+          <p className="text-secondary mb-0">
+            Configure Round 2 cases,
+            clues, questions, hints
+            and participant access.
+          </p>
+
+        </div>
+
+
+        {selectedCase && (
+          <div className="alert alert-dark d-flex flex-wrap justify-content-between align-items-center gap-2">
+
+            <div>
+              <strong>
+                Active Case:
+              </strong>{" "}
+              {
+                selectedCase.title
+              }
+            </div>
+
+            <button
+              className="btn btn-sm btn-outline-light"
+              onClick={() =>
+                setSelectedCase(
+                  null
+                )
+              }
+            >
+              Clear Case
+            </button>
+
+          </div>
+        )}
+
+
+        <div className="card shadow-sm mb-4">
+
+          <div className="card-body p-2">
+
+            <div className="nav nav-pills flex-wrap gap-1">
+
+              {tabs.map(
+                tab => (
+                  <button
+                    key={
+                      tab.id
+                    }
+                    type="button"
+                    className={`nav-link ${
+                      activeTab ===
+                      tab.id
+                        ? "active"
+                        : ""
+                    }`}
+                    onClick={() =>
+                      setActiveTab(
+                        tab.id
+                      )
+                    }
+                  >
+                    {
+                      tab.label
+                    }
+                  </button>
+                )
+              )}
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        {activeTab ===
+          "cases" && (
+          <CaseManager
+            onSelectCase={
+              handleCaseSelect
+            }
+          />
+        )}
+
+
+        {activeTab ===
+          "clues" && (
+          <ClueManager
+            caseId={
+              selectedCase?._id
+            }
+          />
+        )}
+
+
+        {activeTab ===
+          "questions" && (
+          <QuestionManager
+            caseId={
+              selectedCase?._id
+            }
+          />
+        )}
+
+
+        {activeTab ===
+          "hints" && (
+          <HintManager
+            caseId={
+              selectedCase?._id
+            }
+          />
+        )}
+
+
+        {activeTab ===
+          "monitoring" && (
+          <MonitoringTable />
+        )}
+
+
+        {activeTab ===
+          "participants" && (
+          <ParticipantAccess />
+        )}
+
+      </main>
+
     </div>
   );
 }
